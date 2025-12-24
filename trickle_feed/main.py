@@ -14,12 +14,35 @@ from report import Report
 import error_code as ec
 
 DISPUTES_SHEET_NAME = "disputes"
+AC_DETAILS_SHEET_NAME = "ac_details"
 
-def leg_to_cbs_account_and_type(file_type, debit_ac, credit_ac, comp_type, disp_type):
+def load_known_bgl_accounts(wb):
+    """
+    Loads all BGL/Vostro accounts from ac_details sheet and returns a set.
+    Also includes known static BGLs.
+    """
+    bgl_set = {
+        "2399724042928", # BGL_POS_PAYABLE
+    }
+    
+    if AC_DETAILS_SHEET_NAME in wb.sheetnames:
+        sheet = wb[AC_DETAILS_SHEET_NAME]
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if not row or row[0] is None: continue
+            # row is (FIID, VOSTRO_AC, SETTL_BGL_AC)
+            vostro = str(row[1] or "").strip()
+            settl = str(row[2] or "").strip()
+            if vostro: bgl_set.add(vostro)
+            if settl: bgl_set.add(settl)
+            
+    return bgl_set
+
+def leg_to_cbs_account_and_type(file_type, debit_ac, credit_ac, comp_type, disp_type, bgl_set=None):
     """
     Decide which account goes into the CBS record and what CBS account type to use (01/04/12/51/54/62).
-    This is a simplified mapping; refine later as you learn exact CBS rules.
     """
+    if bgl_set is None: bgl_set = set()
+
     # For now:
     # - Use debit_ac as the posting account for DR legs
     # - Use credit_ac as the posting account for CR legs
@@ -29,6 +52,7 @@ def leg_to_cbs_account_and_type(file_type, debit_ac, credit_ac, comp_type, disp_
     is_customer_leg = True
     is_credit = False
     acct = debit_ac or credit_ac or ""
+    acct_str = str(acct).strip()
 
     # Simple heuristic:
     if file_type == "CR":
@@ -43,12 +67,12 @@ def leg_to_cbs_account_and_type(file_type, debit_ac, credit_ac, comp_type, disp_
         is_credit = True
         acct = credit_ac or debit_ac
 
-    # Decide if this is BGL vs customer from account length / pattern (placeholder)
-    # You can refine using bank’s BGL ranges; for now:
-    if len(str(acct)) >= 13:
-        is_customer_leg = True
-    else:
-        is_customer_leg = False
+    # DECIDE Account Type logic:
+    # Check against known BGL set OR standard patterns for BGLs (98581... / 98582...)
+    is_bgl = (acct_str in bgl_set) or acct_str.startswith("98581") or acct_str.startswith("98582")
+    
+    # If it is a BGL, it is NOT a customer leg
+    is_customer_leg = not is_bgl
 
     # Map to CBS type
     if not is_customer_leg and not is_credit:
@@ -138,6 +162,10 @@ def excel_to_cbs_files(excel_path, output_dir):
             return None
 
         disputes_sheet = wb[DISPUTES_SHEET_NAME]
+        
+        # Load known BGL accounts for type deduction
+        bgl_set = load_known_bgl_accounts(wb)
+        
         files_data = {}  # Group by file_type
 
         for row_idx, row in enumerate(disputes_sheet.iter_rows(min_row=2, values_only=True), 2):
@@ -184,7 +212,8 @@ def excel_to_cbs_files(excel_path, output_dir):
                 debit_ac=debit_ac,
                 credit_ac=credit_ac,
                 comp_type=comp_type,
-                disp_type=disp_type
+                disp_type=disp_type,
+                bgl_set=bgl_set
             )
 
             acno_clean = validate_acno_for_cbs(leg_acct)
@@ -259,7 +288,7 @@ def main():
         
         # Check if input is Excel (ATM Dispute output)
         if input_path.lower().endswith('.xlsx'):
-            print("Processing Excel → CBS files...")
+            print("Processing Excel -> CBS files...")
             cbs_files = excel_to_cbs_files(input_path, output_path)
             if cbs_files:
                 print("CBS files generated:")

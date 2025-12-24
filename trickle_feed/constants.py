@@ -53,13 +53,13 @@ COPYRIGHT_CLAUSE = "Copyright © 2017 State Bank of India. All Rights Reserved."
 # constants.py - KEEP YOUR EXISTING ARRAY (it's CORRECT)
 
 # CORRECTED Verification Test (JE=15 is FIRST row, index 0)
-print("checkDigitConstantArray shape:", len(checkDigitConstantArray), "x", len(checkDigitConstantArray[0]))
-print("Sample lookup JE=15, Mdigit=0:", checkDigitConstantArray[0][0])   # Should be 10 ✓
-print("Sample lookup JE=10, Mdigit=4:", checkDigitConstantArray[5][4])   # Should be 5 ✓
-print("Sample lookup JE=0, Mdigit=0: ", checkDigitConstantArray[15][0])  # Should be 1  ✓
+# print("checkDigitConstantArray shape:", len(checkDigitConstantArray), "x", len(checkDigitConstantArray[0]))
+# print("Sample lookup JE=15, Mdigit=0:", checkDigitConstantArray[0][0])   # Should be 10 ✓
+# print("Sample lookup JE=10, Mdigit=4:", checkDigitConstantArray[5][4])   # Should be 5 ✓
+# print("Sample lookup JE=0, Mdigit=0: ", checkDigitConstantArray[15][0])  # Should be 1  ✓
 
 # Array is CORRECT - Java indexing confirmed
-print("✅ Array verified - Matches Java exactly")
+# print("✅ Array verified - Matches Java exactly")
 
 
 
