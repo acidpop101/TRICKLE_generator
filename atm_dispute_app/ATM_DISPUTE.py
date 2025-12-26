@@ -280,161 +280,255 @@ def validate_acno(acno):
         acno = acno[1:]
     return acno
 
-def compute_legs(card_fiid, term_fiid, branch, acno, comp_type, disp_type, credit_to, ac_details):
+def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type, credit_to, ac_details):
     """
-    Rough Python clone of JSP leg logic.
-    Returns a list of legs: each leg = dict with debit_ac, credit_ac, file_type.
-    For now we implement a minimal but correct multi-leg structure:
-    - SOF + dd  → one CR file leg (POS payable)
-    - SOF + short → T1/T2 legs
-    - FOS/FOF → simple T1+T2 or VD/VC pattern placeholder
-    Later you can refine this to match the JSP exactly.
+    Python port of the JSP logic for computing accounting legs.
+    Returns: (legs, error_message)
+          legs: list of dicts {debit_ac, credit_ac, file_type}
+          error_message: string if rejected, else None
     """
     legs = []
-    # Clean branch to 5 digits
+    
+    # -------------------------------------------------------------
+    # 1. Helper / Setup
+    # -------------------------------------------------------------
+    
+    # Clean branch to 5 digits (logic from JSP)
+    # JSP: "if(comp_type.equals("SOF")){ branch=dr_branch; }" where dr_branch from param OR cardno
+    # We assume 'branch' passed in is already correct (cardno based).
     branch = str(branch).zfill(5)
     
-    # DEFAULTS (you will replace these with proper accounts from ac_details later)
-    # These mimic the hard-coded BGL accounts in JSP (10309..., 98581..., 98582...)
-    BGL_POS_PAYABLE = "2399724042928" # example from JSP debit1 for CR
-    BGL_SHORT_SBI   = "98581" + branch + "C"
-    BGL_CUST_SBI    = "98582" + branch + "C"
-    
-    term_ac = ac_details.get(term_fiid, {})
-    card_ac = ac_details.get(card_fiid, {})
-    
-    term_vostro = term_ac.get("vostro_ac", "")
-    term_settl_bgl = term_ac.get("settl_bgl_ac", "")
-    
-    card_vostro = card_ac.get("vostro_ac", "")
-    card_settl_bgl = card_ac.get("settl_bgl_ac", "")
-    
-    # 1) SOF (State Bank On-Us) cases
-    if comp_type == "SOF":
-        if disp_type in ("dd", "unsucc", "full"):
-            # Case: SOF + dd/full/unsucc → CR file only (POS Payable Entry)
-            if credit_to == "cust":
-                credit_ac = acno  # credit customer's account
-            else:
-                credit_ac = BGL_CUST_SBI  # branch BGL credit
-            
-            legs.append({
-                "debit_ac": BGL_POS_PAYABLE,
-                "credit_ac": credit_ac,
-                "file_type": "CR",
-            })
-        elif disp_type == "short":
-            # Case: SOF + short → T1 + T2 legs
-            # T1: debit 98581+branch (short credit BGL),  credit = Collection A/c of Terminal Owner (Bank)
-            # Logic: If term_fiid is our bank (SBI), use internal BGL. If other, use Settl BGL? 
-            # Actually for SOF, Terminal Owner IS SBI (usually). 
-            # But let's look up the "Settlement BGL" for the terminal owner just in case.
-            
-            # "COLLECTION_AC_TERM" placeholder replacement:
-            # If term_fiid is in ac_details, use its settl_bgl_ac. Else fallback to BGL_CUST_SBI or similar.
-            term_col_ac = term_settl_bgl if term_settl_bgl else BGL_CUST_SBI 
+    # Pre-defined Logic for C0xx Accounts (for debit1/credit2 mappings)
+    # Logic extracted from JSP if/else chains
+    def get_c0xx_account(fiid, mode='debit'):
+        # mode='debit' for SOF debit1 logic, mode='credit' for T2 credit2 logic (mostly same)
+        if fiid == "C021": return "10309443213"
+        if fiid == "C022": return "10309443177"
+        if fiid == "C023": return "10309443188"
+        if fiid == "C024": return "10309443235"
+        if fiid == "C025": return "10309443246"
+        if fiid == "C027": return "10309443202"
+        return None
 
-            legs.append({
-                "debit_ac": BGL_SHORT_SBI,
-                "credit_ac": term_col_ac, 
-                "file_type": "T1",
-            })
-            
-            # T2: debit collection_ac, credit customer or 98582+branch
-            if credit_to == "cust":
-                credit2 = acno
-            else:
-                credit2 = BGL_CUST_SBI
-                
-            legs.append({
-                "debit_ac": term_col_ac,
-                "credit_ac": credit2,
-                "file_type": "T2",
-            })
+    # Load account details helper
+    def get_ac_info(fiid):
+        # ac_details keys: 'vostro_ac', 'settl_bgl_ac' (mapped to collection_ac)
+        info = ac_details.get(fiid)
+        if not info: return None
+        return info
+
+    debit1 = ""
+    credit1 = ""
+    file_type1 = "N"
     
-    # 2) FOS (Foreign On-Us)
+    debit2 = ""
+    credit2 = ""
+    file_type2 = "N"
+    
+    debit3 = ""
+    credit3 = ""
+    file_type3 = "N"
+    
+    # -------------------------------------------------------------
+    # 2. Logic Implementation
+    # -------------------------------------------------------------
+    
+    # ======== CASE: SOF ========
+    if comp_type == "SOF":
+        if disp_type in ("dd", "98581", "unsucc", "full"):
+            debit1 = "2399724042928"
+            file_type1 = "CR"
+            
+            if card_fiid == "C001":
+                if credit_to == "cust":
+                    if len(acno) != 11:
+                        return [], f"Invalid Credit Account: {acno}. Must be 11 digits for 'cust'."
+                    credit1 = acno
+                else:
+                    credit1 = "98582" + branch + "C"
+            else:
+                return [], "Dispute Type Not Allowed for Card FIID"
+                
+            # JSP: "rs_ac1=stmt.executeQuery... where fiid=term_fiid"
+            # It checks if term_fiid exists, if not -> "Invalid Term FIID". 
+            # Note: For this branch, it actually DOESN'T use the result rs_ac1 for account assignment, 
+            # but it enforces the check.
+            info = get_ac_info(term_fiid)
+            if not info:
+                return [], "Invalid Term FIID (Not found in ac_details)"
+                
+        elif disp_type == "short":
+            file_type1 = "T1"
+            
+            # -- Leg 1 Debit Logic --
+            if card_fiid == "C001":
+                debit1 = "98581" + branch + "C"
+            else:
+                special_ac = get_c0xx_account(card_fiid)
+                if special_ac:
+                    debit1 = special_ac
+                else:
+                    return [], "Dispute Type Not Allowed for Card FIID"
+            
+            # -- Leg 1 Credit (and T2 Debit) Logic --
+            info = get_ac_info(term_fiid)
+            if info:
+                # JSP: credit1=rs_ac1.getString("collection_ac"); credit2=rs_ac1.getString("vostro_ac");
+                # Wait: JSP says:
+                # credit1=rs_ac1.getString("collection_ac");
+                # credit2=rs_ac1.getString("vostro_ac");  <-- Suspicious? 
+                # Actually typically T1 credit is collection. 
+                # Let's re-read JSP carefully:
+                #   credit1=rs_ac1.getString("collection_ac");
+                #   credit2=rs_ac1.getString("vostro_ac");
+                #   debit2=credit1; 
+                #
+                # Wait, usually T2 debit is Collection. Yes, debit2=credit1.
+                # BUT credit2 is Vostro? 
+                # Let's check the rest of the flow...
+                #
+                # Ah, wait. Inside SOF->Short:
+                # if(term_fiid.equals("F005")){ file_type2="T2"; } else { file_type2="VC"; }
+                # 
+                # Actually, look at the JSP logic for SOF credit2 assignment later:
+                # IT OVERWRITES credit2 later!
+                # "if(term_fiid.equals("C001")) ... credit2=98582...C"
+                # So the initial `credit2=vostro` from rs_ac1 might be ignored or is for specific cases.
+                
+                credit1 = info.get("settl_bgl_ac", "") # Collection AC
+                # We will set debit2 temporarily, final logic handles it
+                debit2 = credit1 
+            else:
+                return [], "Invalid Term FIID"
+            
+            # -- File Type 2 determination --
+            if term_fiid == "F005":
+                file_type2 = "T2"
+            else:
+                file_type2 = "VC"
+                
+            # -- Leg 2 Credit Logic --
+            if term_fiid == "C001":
+                # temp1=atmid.substring(5,10); credit2="98582"+temp1+"C";
+                if len(atmid) >= 10:
+                     temp1 = atmid[5:10]
+                     credit2 = "98582" + temp1 + "C"
+                else:
+                     # Fallback if ATMID is short? JSP assumes valid.
+                     credit2 = "98582" + branch + "C" # Fallback
+            elif term_fiid in ("C021", "C022", "C023", "C024", "C025", "C027"):
+                c_acc = get_c0xx_account(term_fiid)
+                if c_acc: credit2 = c_acc
+            else:
+                 return [], "Invalid Term FIID (for Credit2 logic)"
+            
+            # -- Leg 2 Override for Card FIID == C001 (Customer logic) --
+            if card_fiid == "C001":
+                file_type2 = "T2"
+                if credit_to == "cust":
+                     if len(acno) != 11:
+                         return [], f"Invalid Credit Account: {acno}"
+                     credit2 = acno
+                else:
+                     credit2 = "98582" + branch + "C"
+
+    # ======== CASE: FOS ========
     elif comp_type == "FOS":
         if disp_type == "short":
-            # Foreign On-Us, short credit.
-            # Leg1 (T1): DR Issuing Bank (Card) Vostro/Settl, CR Issuing Bank Settl
-            # Use data from ac_details for Card/Issuer FIID
-            
-            dr_ac = card_vostro if card_vostro else (card_settl_bgl if card_settl_bgl else "MISSING_VOSTRO")
-            cr_ac = card_settl_bgl if card_settl_bgl else "MISSING_SETTL"
-            
-            legs.append({
-                "debit_ac": dr_ac,
-                "credit_ac": cr_ac,
-                "file_type": "T1",
-            })
-            
-            # Leg2 (T2): DR Issuing Bank Settl, CR Terminal Owner Settl
-            term_cr_ac = term_settl_bgl if term_settl_bgl else "MISSING_TERM_SETTL"
-            
-            legs.append({
-                "debit_ac": cr_ac,
-                "credit_ac": term_cr_ac,
-                "file_type": "T2",
-            })
-        else:
-            # Other FOS disputes: VD/VC pattern (reusing similar logic)
-            dr_ac = card_vostro if card_vostro else card_settl_bgl
-            cr_ac = card_settl_bgl
-            
-            legs.append({
-                "debit_ac": dr_ac, 
-                "credit_ac": cr_ac,
-                "file_type": "VD",
-            })
-            term_cr_ac = term_settl_bgl
-            legs.append({
-                "debit_ac": cr_ac,
-                "credit_ac": term_cr_ac,
-                "file_type": "VC",
-            })
-            
-    # 3) FOF (Foreign Off-Us)
+             # -- Leg 1 Lookup (Card FIID) --
+             info = get_ac_info(card_fiid)
+             if info:
+                 debit1 = info.get("vostro_ac", "")
+                 credit1 = info.get("settl_bgl_ac", "") # Collection
+                 debit2 = credit1
+                 
+                 if card_fiid == "F005":
+                     file_type1 = "T1"
+                 else:
+                     file_type1 = "VD"
+             else:
+                 return [], "Account Details Corresponding to Card FIID Not Found"
+             
+             # -- Leg 2 Logic (Term FIID) --
+             file_type2 = "T2"
+             if term_fiid == "C001":
+                 if len(atmid) >= 10:
+                     temp1 = atmid[5:10]
+                     credit2 = "98582" + temp1 + "C"
+                 else:
+                     credit2 = "98582" + branch + "C"
+             elif term_fiid in ("C021", "C022", "C023", "C024", "C025", "C027"):
+                 c_acc = get_c0xx_account(term_fiid)
+                 if c_acc: credit2 = c_acc
+             else:
+                 return [], "Invalid Term FIID"
+                 
+    # ======== CASE: FOF ========
     elif comp_type == "FOF":
-        # Similar logic to FOS but typically involves Acquiring Bank vs Issuer
-        # For simplicity, using same lookups for now as placeholders were identical
-        if disp_type == "short":
-            dr_ac = card_vostro if card_vostro else card_settl_bgl
-            cr_ac = card_settl_bgl
-            legs.append({
-                "debit_ac": dr_ac,
-                "credit_ac": cr_ac,
-                "file_type": "T1",
-            })
-            term_cr_ac = term_settl_bgl
-            legs.append({
-                "debit_ac": cr_ac,
-                "credit_ac": term_cr_ac,
-                "file_type": "T2",
-            })
-        else:
-            dr_ac = card_vostro if card_vostro else card_settl_bgl
-            cr_ac = card_settl_bgl
-            legs.append({
-                "debit_ac": dr_ac,
-                "credit_ac": cr_ac,
-                "file_type": "VD",
-            })
-            term_cr_ac = term_settl_bgl
-            legs.append({
-                "debit_ac": cr_ac,
-                "credit_ac": term_cr_ac,
-                "file_type": "VC",
-            })
+         # -- Leg 1 (Term FIID) --
+         info_term = get_ac_info(term_fiid)
+         if info_term:
+             debit1 = info_term.get("vostro_ac", "")
+             credit1 = info_term.get("settl_bgl_ac", "")
+             
+             if term_fiid == "F005":
+                 file_type1 = "T1"
+             else:
+                 file_type1 = "VD"
+             
+             # Determine next file type
+             if file_type1 == "VD":
+                 file_type2 = "T1"
+             else:
+                 file_type2 = "T2"
+                 
+             debit2 = credit1
+         else:
+             return [], "Account Details Corresponding to Term FIID Not Found"
+         
+         # -- Leg 2/3 (Card FIID) --
+         info_card = get_ac_info(card_fiid)
+         if info_card:
+             # JSP: credit3=vostro, credit2=collection, debit3=credit2
+             val_vostro = info_card.get("vostro_ac", "")
+             val_coll = info_card.get("settl_bgl_ac", "")
+             
+             credit3 = val_vostro
+             credit2 = val_coll
+             debit3 = credit2 # JSP: debit3=credit2
+             
+             if card_fiid == "F005":
+                 if file_type2 == "T1":
+                     file_type3 = "T2"
+                 else:
+                     file_type3 = "T3"
+             else:
+                 file_type3 = "VC"
+         else:
+             return [], "Account Details Corresponding to Card FIID Not Found"
 
-    # If no rule matched, create at least one T1 leg as a fallback
-    if not legs:
-        legs.append({
-            "debit_ac": "FALLBACK_DEBIT",
-            "credit_ac": acno or "FALLBACK_CREDIT",
-            "file_type": "T1",
-        })
+    # -------------------------------------------------------------
+    # 3. Construct Legs List
+    # -------------------------------------------------------------
+    # Filter out empty/N legs
     
-    return legs
+    # Filter out empty/N legs
+    def is_valid_ac(ac):
+        return ac and str(ac).strip() != "" and str(ac).strip() != "0"
+
+    if file_type1 != "N" and is_valid_ac(debit1) and is_valid_ac(credit1):
+        legs.append({"debit_ac": debit1, "credit_ac": credit1, "file_type": file_type1})
+        
+    if file_type2 != "N" and is_valid_ac(debit2) and is_valid_ac(credit2):
+        legs.append({"debit_ac": debit2, "credit_ac": credit2, "file_type": file_type2})
+        
+    if file_type3 != "N" and is_valid_ac(debit3) and is_valid_ac(credit3):
+        legs.append({"debit_ac": debit3, "credit_ac": credit3, "file_type": file_type3})
+        
+    if not legs:
+        return [], "No valid legs could be generated (Accounts were missing or empty)."
+        
+    return legs, None
 
 class ATMDisputeApp:
     def __init__(self, root):
@@ -574,16 +668,21 @@ class ATMDisputeApp:
         branch = branch.zfill(5)
 
         # NEW: compute legs (like JSP)
-        legs = compute_legs(
+        legs, error_msg = compute_legs(
             card_fiid=card_fiid,
             term_fiid=term_fiid,
             branch=branch,
             acno=acno,
+            atmid=atmid,
             comp_type=comp_type,
             disp_type=disp_type,
             credit_to=credit_to,
             ac_details=self.ac_details,
         )
+
+        if error_msg:
+             messagebox.showerror("Processing Error", error_msg)
+             return
 
         # For EACH leg, write one row into disputes sheet
         for idx, leg in enumerate(legs, start=1) :

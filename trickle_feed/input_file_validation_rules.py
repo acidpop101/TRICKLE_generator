@@ -44,9 +44,14 @@ class InputFileValidationRules:
                 file_obj.setErrorCode(message1 + ec.MAX_CR_DR_AMOUNT_ERR)
 
     def checkAccountNumber(self, record, fileobj):
+        # SKIP validation for BGL/System accounts which can be alphanumeric
+        acc_type = record.getAccountType()
+        if acc_type in (BGL_DR, SYS_DR, BGL_CR, SYS_CR):
+            return
+
         if record.getAccountNumber() == 0:
             record.setError(True)
-            record.setErrorCode(ec.ACCOUNTNUMBERZEROERR)
+            record.setErrorCode(ec.ACCOUNT_NUMBER_ZERO_ERR)
             return
     
         account_str = str(record.getAccountNumber())
@@ -86,13 +91,20 @@ class InputFileValidationRules:
         sAccountType = rec[0:2]
         sAccount = rec[2:19]
         sAmount = rec[19:35]
+        print(f"DEBUG: Processing Line: Type='{sAccountType}', Account='{sAccount}'") # Debug print
         record.setAccountType(sAccountType)
-        try:
-            record.setAccountNumber(int(sAccount))
-        except:
-            record.setError(True)
-            record.setErrorCode(ec.ACCOUNT_NUMERIC_ERR)
-            return
+        record.setAccountType(sAccountType)
+        
+        # CHANGED: Only enforce int cast for Customer accounts. Allow string for others.
+        if sAccountType in (BGL_DR, SYS_DR, BGL_CR, SYS_CR):
+             record.setAccountNumber(sAccount.strip()) # Store as string
+        else:
+            try:
+                record.setAccountNumber(int(sAccount))
+            except:
+                record.setError(True)
+                record.setErrorCode(ec.ACCOUNT_NUMERIC_ERR)
+                return
         
         try:
             record.setAmount(int(sAmount))

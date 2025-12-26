@@ -69,8 +69,22 @@ def leg_to_cbs_account_and_type(file_type, debit_ac, credit_ac, comp_type, disp_
 
     # DECIDE Account Type logic:
     # Check against known BGL set OR standard patterns for BGLs (98581... / 98582...)
-    is_bgl = (acct_str in bgl_set) or acct_str.startswith("98581") or acct_str.startswith("98582")
+    # Handle leading zeros which might be present in acct_str
+    clean_acct = acct_str.lstrip('0')
+    # Hardcoded BGLs from ATM_DISPUTE logic
+    known_bgl_list = [
+        "10309443213", "10309443177", "10309443188", 
+        "10309443235", "10309443246", "10309443202",
+        "2399724042928"
+    ]
     
+    is_bgl = (acct_str in bgl_set) or \
+             (clean_acct in bgl_set) or \
+             (clean_acct in known_bgl_list) or \
+             clean_acct.startswith("9858") or \
+             clean_acct.startswith("10309") or \
+             (not clean_acct.isdigit()) # Ultimate safety: if it has letters, it MUST be BGL
+             
     # If it is a BGL, it is NOT a customer leg
     is_customer_leg = not is_bgl
 
@@ -99,18 +113,22 @@ def process_file(args):
     if not os.path.isdir(inputDirectoryPath):
         report.setError(True)
         report.setErrorCode("INPUT DIRECTORY DOES NOT EXIST.")
+        print("INPUT DIRECTORY DOES NOT EXIST.")
         return report
 
     file_list = [
         os.path.join(inputDirectoryPath, f)
         for f in os.listdir(inputDirectoryPath)
-        if os.path.isfile(os.path.join(inputDirectoryPath, f))
+        if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.dat')
     ]
 
     inputFileValidationRules = InputFileValidationRules()
 
     # ---------- START of loop over files ----------
     for file_path in file_list:
+        if os.path.basename(file_path) == outputReportName:
+            continue
+            
         file_obj = FileObject()
         record = RecordObject()
         file_obj.setFileName(os.path.basename(file_path))
@@ -151,14 +169,12 @@ def process_file(args):
             print(ex)
 
     return report
-
-
 def excel_to_cbs_files(excel_path, output_dir):
     """Convert atm_data.xlsx → CBS fixed-width .dat files (CORRECTED FORMAT)"""
     try:
         wb = openpyxl.load_workbook(excel_path)
         if DISPUTES_SHEET_NAME not in wb.sheetnames:
-            print(f"No '{DISPUTES_SHEET_NAME}' sheet found")
+            print(f"ERROR: No '{DISPUTES_SHEET_NAME}' sheet found")
             return None
 
         disputes_sheet = wb[DISPUTES_SHEET_NAME]
@@ -171,8 +187,10 @@ def excel_to_cbs_files(excel_path, output_dir):
         for row_idx, row in enumerate(disputes_sheet.iter_rows(min_row=2, values_only=True), 2):
             if len(row) < 14 or row[12] is None:  # Skip incomplete rows
                 continue
+            
+            # ... (rest of loop) ...
 
-            # Need to be robust to row length
+
             ref = row[0]
             txndate = row[1]
             cardno = row[2]
@@ -204,9 +222,12 @@ def excel_to_cbs_files(excel_path, output_dir):
                 continue
 
             # ✅ FIXED: Convert to paise with EXACT 16 digits
-            amount_paise = int(float(amount_str or 0) * 100)
+            try:
+                amount_paise = int(float(amount_str or 0) * 100)
+            except:
+                amount_paise = 0
             amount_str_fixed = f"{amount_paise:016d}" # EXACTLY 16 digits, zero-padded
-
+            
             leg_acct, account_type = leg_to_cbs_account_and_type(
                 file_type=file_type,
                 debit_ac=debit_ac,
@@ -215,27 +236,40 @@ def excel_to_cbs_files(excel_path, output_dir):
                 disp_type=disp_type,
                 bgl_set=bgl_set
             )
-
+            
             acno_clean = validate_acno_for_cbs(leg_acct)
+            
+            # Format Date YYMMDD
+            pdate = "000101"
+            if posting_date:
+                pdate = posting_date or "000101"
 
-            # ✅ FIXED: Transaction details (Pos 35-100) matching your sample
+            field_pad = " " * 10
+            field_card = (str(cardno) if cardno else "").ljust(16)[:16]
+            field_date = pdate[:6]
+            field_txn  = (str(txnno) if txnno else "").zfill(9)[:9]
+            field_br   = (str(branch) if branch else "").zfill(4)[:4]
+            
             txn_details = (
-                f"DT {atmid or ''}{branch or ''} "
-                f"TXN{txnno or ''} {posting_date or ''[:6] if posting_date else ''} "
-                f"ERR ID-{ref or ''}"
-            ).strip()[:66].ljust(66)  # Max 66 chars, space padded if short
+                f"{field_pad}{field_card} {field_date} {field_txn} {field_br}"
+            ).ljust(66)
 
-            # ✅ CORRECT CBS Format: EXACTLY matches your sample
+            # ✅ CORRECT CBS Format
             cbs_record = (
-                f"{account_type:<2}"       # Pos 0-1:   "01"
-                f"{acno_clean:<17}"        # Pos 2-18:  "0000031341849933"
-                f"{amount_str_fixed:<16}"  # Pos 19-34: "000000000300000"
-                f"{txn_details:<66}"       # Pos 35-100: Transaction details
+                f"{account_type:<2}"
+                f"{acno_clean:<17}"
+                f"{amount_str_fixed:<16}"
+                f"{txn_details:<66}"
             )
-
+            
             if file_type not in files_data:
                 files_data[file_type] = []
             files_data[file_type].append(cbs_record)
+
+
+
+
+
 
         wb.close()
 
