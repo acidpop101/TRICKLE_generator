@@ -3,6 +3,7 @@ import constants
 import os
 import sys
 import openpyxl
+from datetime import datetime
 from pathlib import Path
 from openpyxl.utils.exceptions import InvalidFileException
 
@@ -37,73 +38,46 @@ def load_known_bgl_accounts(wb):
             
     return bgl_set
 
-def leg_to_cbs_account_and_type(file_type, debit_ac, credit_ac, comp_type, disp_type, bgl_set=None):
+def determine_cbs_type(acct, is_credit_record):
     """
-    Decide which account goes into the CBS record and what CBS account type to use (01/04/12/51/54/62).
+    Determine CBS account type (01/04/51/54/12/62) based on account number and record side.
     """
-    if bgl_set is None: bgl_set = set()
-
-    # For now:
-    # - Use debit_ac as the posting account for DR legs
-    # - Use credit_ac as the posting account for CR legs
-    # - Map by file_type: T1/T2/VD/VC/CR
-    
-    # Default values
-    is_customer_leg = True
-    is_credit = False
-    acct = debit_ac or credit_ac or ""
-    acct_str = str(acct).strip()
-
-    # Simple heuristic:
-    if file_type == "CR":
-        is_credit = True
-        acct = credit_ac or debit_ac
-    elif file_type in ("T1", "VD"):
-        # Treat as debit legs (BGL or customer)
-        is_credit = False
-        acct = debit_ac or credit_ac
-    elif file_type in ("T2", "VC"):
-        # Treat as credit legs
-        is_credit = True
-        acct = credit_ac or debit_ac
-
-    # DECIDE Account Type logic:
-    # Check against known BGL set OR standard patterns for BGLs (98581... / 98582...)
-    # Handle leading zeros which might be present in acct_str
+    acct_str = str(acct or "").strip()
     clean_acct = acct_str.lstrip('0')
-    # Hardcoded BGLs from ATM_DISPUTE logic
+    
+    # Check against known BGL patterns or explicit BGL list
+    # Hardcoded BGLs from ATM_DISPUTE logic + known patterns
     known_bgl_list = [
         "10309443213", "10309443177", "10309443188", 
         "10309443235", "10309443246", "10309443202",
         "2399724042928"
     ]
     
-    is_bgl = (acct_str in bgl_set) or \
-             (clean_acct in bgl_set) or \
-             (clean_acct in known_bgl_list) or \
+    is_bgl = (clean_acct in known_bgl_list) or \
              clean_acct.startswith("9858") or \
              clean_acct.startswith("10309") or \
-             (not clean_acct.isdigit()) # Ultimate safety: if it has letters, it MUST be BGL
+             clean_acct.startswith("48979") or \
+             (not clean_acct.isdigit()) # Safety
              
-    # If it is a BGL, it is NOT a customer leg
-    is_customer_leg = not is_bgl
-
-    # Map to CBS type
-    if not is_customer_leg and not is_credit:
-        cbs_type = "54"     # BGL_DR
-    elif not is_customer_leg and is_credit:
-        cbs_type = "04"     # BGL_CR
-    elif is_customer_leg and not is_credit:
-        cbs_type = "51"     # CUSTOMER_DR
+    # Vostro accounts (30...) are often treated as BGL/Interbank in terms of type?
+    # Actually, Vostro usually map to Type 12 (SYS_CR) or 62 (SYS_DR) in some systems, 
+    # but based on earlier mapping:
+    # FOS/short: Dr Vostro (or Customer?) -> usually BGL-like treatment if internal.
+    # Let's map strict:
+    
+    if is_bgl:
+        return "04" if is_credit_record else "54"
     else:
-        cbs_type = "01"     # CUSTOMER_CR
-
-    return acct, cbs_type
+        # Customer
+        return "01" if is_credit_record else "51"
 
 def process_file(args):
     inputDirectoryPath = args[0] if len(args) > 0 else ""
     outputDirectoryPath = args[1] if len(args) > 1 else ""
-    outputReportName = args[2] if len(args) > 2 else "REPORT.txt"
+    
+    date_suffix = datetime.now().strftime("_%d%m%y")
+    default_report = f"REPORT{date_suffix}.txt"
+    outputReportName = args[2] if len(args) > 2 else default_report
 
     report = Report()
     report.setReportName(outputReportName)
@@ -119,7 +93,7 @@ def process_file(args):
     file_list = [
         os.path.join(inputDirectoryPath, f)
         for f in os.listdir(inputDirectoryPath)
-        if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.dat')
+        if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.txt')
     ]
 
     inputFileValidationRules = InputFileValidationRules()
@@ -161,7 +135,7 @@ def process_file(args):
         output_file_path = os.path.join(out_dir, report.getReportName())
         try:
             with open(output_file_path, "w", encoding="utf-8") as fw:
-                fw.write(report.getReport())
+                 fw.write(report.getReport())
         except Exception as ex:
             print("----------FILE NOT GENERATED SUCCESSFULLY----------")
             report.setError(True)
@@ -185,6 +159,7 @@ def excel_to_cbs_files(excel_path, output_dir):
         files_data = {}  # Group by file_type
 
         for row_idx, row in enumerate(disputes_sheet.iter_rows(min_row=2, values_only=True), 2):
+            # print(f"DEBUG: Checking Row {row_idx}: Len={len(row)}, Type={row[12] if len(row)>12 else 'None'}")
             if len(row) < 14 or row[12] is None:  # Skip incomplete rows
                 continue
             
@@ -204,7 +179,7 @@ def excel_to_cbs_files(excel_path, output_dir):
             status = row[10]
             posting_date = row[11]
             file_type = row[12]
-            remarks = row[13]
+            remarks = row[13] if len(row) > 13 else None
 
             # Additional columns might exist
             posting_flag = row[14] if len(row) > 14 else None
@@ -228,43 +203,85 @@ def excel_to_cbs_files(excel_path, output_dir):
                 amount_paise = 0
             amount_str_fixed = f"{amount_paise:016d}" # EXACTLY 16 digits, zero-padded
             
-            leg_acct, account_type = leg_to_cbs_account_and_type(
-                file_type=file_type,
-                debit_ac=debit_ac,
-                credit_ac=credit_ac,
-                comp_type=comp_type,
-                disp_type=disp_type,
-                bgl_set=bgl_set
-            )
+            # CHECK: Skip if NO accounts are present (prevents garbage BGL generation)
+            if not debit_ac and not credit_ac:
+                print(f"Skipping Row {row_idx} (Ref: {ref}): No Debit or Credit Account found.")
+                continue
             
-            acno_clean = validate_acno_for_cbs(leg_acct)
+            # Generate PAIRED records: One Debit, One Credit
             
-            # Format Date YYMMDD
-            pdate = "000101"
-            if posting_date:
-                pdate = posting_date or "000101"
+            # 1. DEBIT Record
+            if debit_ac:
+                dr_type = determine_cbs_type(debit_ac, is_credit_record=False)
+                dr_ac_clean = validate_acno_for_cbs(debit_ac)
+                
+                # DATE Logic: use txndate (row[1]) preferred, else posting_date
+                final_date = "000101"
+                if txndate:
+                    # Check if it's already a datetime object (OpenPyXL default for dates)
+                    if isinstance(txndate, datetime):
+                        final_date = txndate.strftime("%d%m%y")
+                    else:
+                        # Handle string formats common in Excel: "06-Oct-25", "21-Dec-25"
+                        d_str = str(txndate).strip()
+                        try:
+                            # Try DD-Mon-YY (e.g. 06-Oct-25)
+                            dt_obj = datetime.strptime(d_str, "%d-%b-%y")
+                            final_date = dt_obj.strftime("%d%m%y")
+                        except ValueError:
+                            try:
+                                # Try DD/MM/YYYY
+                                dt_obj = datetime.strptime(d_str, "%d/%m/%Y")
+                                final_date = dt_obj.strftime("%d%m%y")
+                            except ValueError:
+                                # Fallback: remove separators and truncate
+                                final_date = d_str.replace("-","").replace("/","")[:6]
 
-            field_pad = " " * 10
-            field_card = (str(cardno) if cardno else "").ljust(16)[:16]
-            field_date = pdate[:6]
-            field_txn  = (str(txnno) if txnno else "").zfill(9)[:9]
-            field_br   = (str(branch) if branch else "").zfill(4)[:4]
-            
-            txn_details = (
-                f"{field_pad}{field_card} {field_date} {field_txn} {field_br}"
-            ).ljust(66)
+                elif posting_date:
+                    final_date = posting_date
 
-            # ✅ CORRECT CBS Format
-            cbs_record = (
-                f"{account_type:<2}"
-                f"{acno_clean:<17}"
-                f"{amount_str_fixed:<16}"
-                f"{txn_details:<66}"
-            )
-            
-            if file_type not in files_data:
-                files_data[file_type] = []
-            files_data[file_type].append(cbs_record)
+                field_pad = " " * 10
+                field_card = (str(cardno) if cardno else "").ljust(16)[:16]
+                field_date = final_date.ljust(6)[:6]
+                
+                # ATM ID: Last 9 digits (e.g. T1BW000138136 -> 000138136)
+                atm_str = str(atmid).strip()
+                field_atmid = atm_str[-9:] if len(atm_str) >= 9 else atm_str.zfill(9)
+                field_atmid = field_atmid[:9]
+
+                # Txn No logic is now the 'Branch' slot (last 4 digits) or full? 
+                # User image "Txn no" is "2140" (4 digits). 
+                field_txn_4 = (str(txnno) if txnno else "").zfill(4)[-4:]
+                
+                txn_details = (
+                    f"{field_pad}{field_card} {field_date} {field_atmid} {field_txn_4}"
+                ).ljust(66)
+
+                cbs_dr_record = (
+                    f"{dr_type:<2}"
+                    f"{dr_ac_clean:<17}"
+                    f"{amount_str_fixed:<16}"
+                    f"{txn_details:<66}"
+                )
+                
+                if file_type not in files_data: files_data[file_type] = []
+                files_data[file_type].append(cbs_dr_record)
+
+            # 2. CREDIT Record
+            if credit_ac:
+                cr_type = determine_cbs_type(credit_ac, is_credit_record=True)
+                cr_ac_clean = validate_acno_for_cbs(credit_ac)
+                
+                # Re-use details
+                cbs_cr_record = (
+                    f"{cr_type:<2}"
+                    f"{cr_ac_clean:<17}"
+                    f"{amount_str_fixed:<16}"
+                    f"{txn_details:<66}"
+                )
+                
+                if file_type not in files_data: files_data[file_type] = []
+                files_data[file_type].append(cbs_cr_record)
 
 
 
@@ -275,8 +292,9 @@ def excel_to_cbs_files(excel_path, output_dir):
 
         # Write .dat files per file_type
         cbs_files = {}
+        date_suffix = datetime.now().strftime("_%d%m%y")
         for file_type, records in files_data.items():
-            output_file = os.path.join(output_dir, f"{file_type.upper()}.dat")
+            output_file = os.path.join(output_dir, f"{file_type.upper()}{date_suffix}.txt")
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(records) + '\n')  # Add final newline
             cbs_files[file_type] = output_file

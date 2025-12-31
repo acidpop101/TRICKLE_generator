@@ -28,6 +28,37 @@ DISPUTES_SHEET_NAME = "disputes"
 ATM_IDS_SHEET_NAME = "valid_atmid"
 AC_DETAILS_SHEET_NAME = "ac_details"
 
+def getCheckDigitNumber(acc_no):
+    """Calculate check digit using 16x9 Matrix from constants.checkDigitConstantArray"""
+    try:
+        # Check if constant array is available (from imports)
+        if 'checkDigitConstantArray' not in globals():
+             print("Error: checkDigitConstantArray not imported.")
+             return "0"
+
+        Macno = int(acc_no)
+        JE = 15
+        Mchkdigit = 0
+        
+        while Macno > 0:
+            iLastDigit = Macno % 10
+            if iLastDigit > 0:
+                Mdigit = iLastDigit - 1
+                indexI = JE
+                indexJ = Mdigit
+                
+                if 0 <= indexI < 16 and 0 <= indexJ < 9:
+                    Mchkdigit += checkDigitConstantArray[indexI][indexJ]
+            
+            Macno //= 10
+            JE -= 1
+            
+        return str(Mchkdigit % 10)
+    except Exception as e:
+        print(f"Error calculating check digit: {e}")
+        return "0"
+
+
 def populate_bin_sheet(filename, sheet_name, data):
     """
     Populates the specified sheet with BIN data.
@@ -210,7 +241,14 @@ def is_valid_atm_id(atmid, valid_atm_ids_set):
     if atmid.upper() in valid_atm_ids_set:
         return True, "" # Valid ID found in the list, no error message needed
     else:
-        return False, "ATM ID is invalid or not found in the approved list."
+        # Debugging info
+        print(f"DEBUG: Validation failed for ID: '{atmid.upper()}'")
+        print(f"DEBUG: Valid IDs Set Size: {len(valid_atm_ids_set)}")
+        if len(valid_atm_ids_set) > 0:
+             sample = list(valid_atm_ids_set)[:5]
+             print(f"DEBUG: Sample IDs: {sample}")
+             
+        return False, f"ATM ID '{atmid}' is invalid or not in approved list (Loaded {len(valid_atm_ids_set)} IDs)."
 
 # -----------------------------------------------------------
 
@@ -412,10 +450,14 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                 # temp1=atmid.substring(5,10); credit2="98582"+temp1+"C";
                 if len(atmid) >= 10:
                      temp1 = atmid[5:10]
-                     credit2 = "98582" + temp1 + "C"
+                     base_c2 = "98582" + temp1
+                     chk_c2 = getCheckDigitNumber(base_c2)
+                     credit2 = base_c2 + chk_c2
                 else:
                      # Fallback if ATMID is short? JSP assumes valid.
-                     credit2 = "98582" + branch + "C" # Fallback
+                     base_c2 = "98582" + branch
+                     chk_c2 = getCheckDigitNumber(base_c2)
+                     credit2 = base_c2 + chk_c2
             elif term_fiid in ("C021", "C022", "C023", "C024", "C025", "C027"):
                 c_acc = get_c0xx_account(term_fiid)
                 if c_acc: credit2 = c_acc
@@ -430,7 +472,9 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                          return [], f"Invalid Credit Account: {acno}"
                      credit2 = acno
                 else:
-                     credit2 = "98582" + branch + "C"
+                     base_c2 = "98582" + branch
+                     chk_c2 = getCheckDigitNumber(base_c2)
+                     credit2 = base_c2 + chk_c2
 
     # ======== CASE: FOS ========
     elif comp_type == "FOS":
@@ -438,25 +482,37 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
              # -- Leg 1 Lookup (Card FIID) --
              info = get_ac_info(card_fiid)
              if info:
-                 debit1 = info.get("vostro_ac", "")
-                 credit1 = info.get("settl_bgl_ac", "") # Collection
-                 debit2 = credit1
-                 
-                 if card_fiid == "F005":
-                     file_type1 = "T1"
-                 else:
-                     file_type1 = "VD"
+                  # T1: Debit 98581... -> Credit Settlement BGL
+                  # Calc Check Digit for 98581 + branch
+                  base_ac = "98581" + branch
+                  chk = getCheckDigitNumber(base_ac)
+                  debit1 = base_ac + chk
+                  
+                  credit1 = info.get("settl_bgl_ac", "") # 48979...
+                  
+                  # T2: Debit Settlement -> Credit Vostro
+                  debit2 = credit1
+                  credit2 = info.get("vostro_ac", "") # 30118...
+                  
+                  if card_fiid == "F005":
+                      file_type1 = "T1"
+                  else:
+                      file_type1 = "VD"
              else:
-                 return [], "Account Details Corresponding to Card FIID Not Found"
+                  return [], "Account Details Corresponding to Card FIID Not Found"
              
              # -- Leg 2 Logic (Term FIID) --
              file_type2 = "T2"
              if term_fiid == "C001":
                  if len(atmid) >= 10:
                      temp1 = atmid[5:10]
-                     credit2 = "98582" + temp1 + "C"
+                     base_c2 = "98582" + temp1
+                     chk_c2 = getCheckDigitNumber(base_c2)
+                     credit2 = base_c2 + chk_c2
                  else:
-                     credit2 = "98582" + branch + "C"
+                     base_c2 = "98582" + branch
+                     chk_c2 = getCheckDigitNumber(base_c2)
+                     credit2 = base_c2 + chk_c2
              elif term_fiid in ("C021", "C022", "C023", "C024", "C025", "C027"):
                  c_acc = get_c0xx_account(term_fiid)
                  if c_acc: credit2 = c_acc
@@ -664,7 +720,15 @@ class ATMDisputeApp:
             messagebox.showerror("Validation Error", f"Card and ATM belong to {bank_name_display}; this dispute type requires different banks.")
             return
 
-        branch = cardno[6:11]
+        if comp_type == "FOS":
+             # Use ATM Branch (Indices 5-10 e.g. T1BW000177... -> 00177)
+             if len(atmid) >= 10:
+                 branch = atmid[5:10]
+             else:
+                 branch = atmid[-5:] # Fallback
+        else:
+             branch = cardno[6:11]
+        
         branch = branch.zfill(5)
 
         # NEW: compute legs (like JSP)
@@ -692,10 +756,7 @@ class ATMDisputeApp:
             
             record = [
                 ref, txndate_fmt, cardno, acno, atmid, txnno, amount, branch,
-                debit_ac, credit_ac, "NO", None, file_type,  f"File{idx} Entry",
-                # remarks
-                "NO", user_name, card_fiid, card_bank_name,
-                term_fiid, term_bank_name, comp_type, disp_type, "127.0.0.1", user_name 
+                debit_ac, credit_ac, "NO", None, file_type
             ]
 
             append_fo_atm_record(record)

@@ -70,18 +70,7 @@ class InputFileValidationRules:
             record.setErrorCode(ec.ACCOUNTCHKDIGITERR)
 
 
-        acc_no_str = str(acc_no)
-        length = len(acc_no_str)
-        if 11 <= length <= 13:
-            last_digit = acc_no % 10
-            base_no = acc_no // 10
-            check_digit = self.getCheckDigitNumber(base_no)
-            if last_digit != check_digit:
-                record.setError(True)
-                record.setErrorCode(ec.ACCOUNT_CHK_DIGIT_ERR)
-        else:
-            record.setError(True)
-            record.setErrorCode(ec.ACCOUNT_NUMBER_CHARS_ERR)
+
 
     def getRecordLength(self): return ec.LENGTH_RECORD
     def getAccountNumberAndAmountLength(self): return ec.LENGTH_ACCNT_AMT
@@ -129,7 +118,7 @@ class InputFileValidationRules:
                 indexJ = Mdigit
                 # CRITICAL: Exact bounds checking
                 if 0 <= indexI < 16 and 0 <= indexJ < 9:
-                    Mchkdigit += Constants.checkDigitConstantArray[indexI][indexJ]
+                    Mchkdigit += checkDigitConstantArray[indexI][indexJ]
         
             Macno //= 10
             JE -= 1  # Decrements from 15→0
