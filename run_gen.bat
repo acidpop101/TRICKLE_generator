@@ -1,13 +1,17 @@
 @echo off
 REM Run Trickle Feed Generator (Excel -> Text)
-REM Usage: run_gen.bat
+REM Uses valid relative paths
+
+set "BASE_DIR=%~dp0"
+set "TRICKLE_DIR=%BASE_DIR%trickle_feed"
+set "APP_DIR=%BASE_DIR%atm_dispute_app"
 
 echo Clean old output...
-del /Q "d:\TRICKLE_generator\trickle_feed\cbs_output\*.txt"
+del /Q "%TRICKLE_DIR%\cbs_output\*.txt"
 
 echo Running Generator...
-python "d:\TRICKLE_generator\trickle_feed\main.py" "d:\TRICKLE_generator\atm_dispute_app\atm_data.xlsx" "d:\TRICKLE_generator\trickle_feed\cbs_output"
+python "%TRICKLE_DIR%\main.py" "%APP_DIR%\atm_data.xlsx" "%TRICKLE_DIR%\cbs_output"
 
 echo.
-echo Check the output folder: "d:\TRICKLE_generator\trickle_feed\cbs_output"
+echo Check the output folder: "%TRICKLE_DIR%\cbs_output"
 pause
