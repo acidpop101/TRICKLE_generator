@@ -249,12 +249,11 @@ def excel_to_cbs_files(excel_path, output_dir):
                 field_atmid = atm_str[-9:] if len(atm_str) >= 9 else atm_str.zfill(9)
                 field_atmid = field_atmid[:9]
 
-                # Txn No logic is now the 'Branch' slot (last 4 digits) or full? 
-                # User image "Txn no" is "2140" (4 digits). 
-                field_txn_4 = (str(txnno) if txnno else "").zfill(4)[-4:]
+                # Use full Txn No 
+                field_txn_full = (str(txnno) if txnno else "").strip()
                 
                 txn_details = (
-                    f"{field_pad}{field_card} {field_date} {field_atmid} {field_txn_4}"
+                    f"{field_pad}{field_card} {field_date} {field_atmid} {field_txn_full}"
                 ).ljust(66)
 
                 cbs_dr_record = (
