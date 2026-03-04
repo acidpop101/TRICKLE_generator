@@ -14,62 +14,175 @@ from input_file_validation_rules import InputFileValidationRules
 from report import Report
 import error_code as ec
 
-DISPUTES_SHEET_NAME = "disputes"
-AC_DETAILS_SHEET_NAME = "ac_details"
-
-def load_known_bgl_accounts(wb):
-    """
-    Loads all BGL/Vostro accounts from ac_details sheet and returns a set.
-    Also includes known static BGLs.
-    """
-    bgl_set = {
-        "2399724042928", # BGL_POS_PAYABLE
-    }
-    
-    if AC_DETAILS_SHEET_NAME in wb.sheetnames:
-        sheet = wb[AC_DETAILS_SHEET_NAME]
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            if not row or row[0] is None: continue
-            # row is (FIID, VOSTRO_AC, SETTL_BGL_AC)
-            vostro = str(row[1] or "").strip()
-            settl = str(row[2] or "").strip()
-            if vostro: bgl_set.add(vostro)
-            if settl: bgl_set.add(settl)
+def excel_to_cbs_files(excel_path, output_dir):
+    """Convert atm_data.xlsx -> CBS fixed-width .dat files"""
+    try:
+        wb = openpyxl.load_workbook(excel_path)
+        sheet = wb["disputes"]
+        
+        # Build Set of known BGLs from ac_details
+        known_bgls = set()
+        if "ac_details" in wb.sheetnames:
+            for r in wb["ac_details"].iter_rows(min_row=2, values_only=True):
+                if r and r[0]:
+                    if r[1]: known_bgls.add(str(r[1]).strip())
+                    if len(r) > 2 and r[2]: known_bgls.add(str(r[2]).strip())
+                    
+        def is_bgl(ac):
+            ac_s = str(ac).strip()
+            if ac_s in known_bgls: return True
+            if ac_s.startswith(('98581', '98582', '10309')): return True
+            if ac_s == '2399724042928': return True
+            if len(ac_s) > 11: return True
+            return False
             
-    return bgl_set
+        files_content = {} # filename -> list of lines
 
-def determine_cbs_type(acct, is_credit_record):
-    """
-    Determine CBS account type (01/04/51/54/12/62) based on account number and record side.
-    """
-    acct_str = str(acct or "").strip()
-    clean_acct = acct_str.lstrip('0')
-    
-    # Check against known BGL patterns or explicit BGL list
-    # Hardcoded BGLs from ATM_DISPUTE logic + known patterns
-    known_bgl_list = [
-        "10309443213", "10309443177", "10309443188", 
-        "10309443235", "10309443246", "10309443202",
-        "2399724042928"
-    ]
-    
-    is_bgl = (clean_acct in known_bgl_list) or \
-             clean_acct.startswith("9858") or \
-             clean_acct.startswith("10309") or \
-             clean_acct.startswith("48979") or \
-             (not clean_acct.isdigit()) # Safety
-             
-    # Vostro accounts (30...) are often treated as BGL/Interbank in terms of type?
-    # Actually, Vostro usually map to Type 12 (SYS_CR) or 62 (SYS_DR) in some systems, 
-    # but based on earlier mapping:
-    # FOS/short: Dr Vostro (or Customer?) -> usually BGL-like treatment if internal.
-    # Let's map strict:
-    
-    if is_bgl:
-        return "04" if is_credit_record else "54"
-    else:
-        # Customer
-        return "01" if is_credit_record else "51"
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if not row or not row[0]: continue 
+            
+            # Indexes based on ATM_DISPUTE:
+            # Ref(0), TxnDate(1), CardNo(2), AcNo(3), ATMID(4), TxnNo(5), Amount(6), Branch(7), 
+            # DrAc(8), CrAc(9), Status(10), PostDate(11), FileType(12)
+            
+            # Safe str conversion
+            def safe_str(val): return str(val).strip() if val is not None else ""
+            
+            dr_ac = safe_str(row[8])
+            cr_ac = safe_str(row[9])
+            
+            try:
+                raw_amt = float(row[6]) if row[6] is not None else 0.0
+                amount_paise = int(raw_amt * 100)
+            except:
+                amount_paise = 0
+                
+            card = safe_str(row[2])
+            
+            raw_date = row[1]
+            if isinstance(raw_date, datetime):
+                date_str = raw_date.strftime("%d%m%y") 
+            else:
+                try:
+                    dt = datetime.strptime(safe_str(raw_date), "%d-%b-%y")
+                    date_str = dt.strftime("%d%m%y")
+                except:
+                    date_str = safe_str(raw_date).replace("-", "")[:6].ljust(6, '0') # Fallback
+                
+            atm_id = safe_str(row[4])
+            atm_id_trunc = atm_id # Do not cut off any character
+            
+            txn_seq = safe_str(row[5])
+            file_type = safe_str(row[12])
+            
+            if not file_type or file_type.upper() == "N" or file_type == "None":
+                continue
+
+            type_upper = file_type.upper()
+            if type_upper in ("T1", "VD"):
+                prefix = "tffo1_disp"
+            elif type_upper in ("T2", "T3"):
+                prefix = "tffo2_disp"
+            elif type_upper == "VC":
+                prefix = "vc_disp"
+            elif type_upper == "CR":
+                prefix = "cr_disp"
+            else:
+                prefix = f"{type_upper}_disp"
+            
+            todays_date = datetime.now().strftime("%d%m%y")
+            fname = f"{prefix}_{todays_date}.txt"
+
+            # --- GENERATE VC/VD RECORD ---
+            if type_upper in ("VC", "VD"):
+                vc_target_date = posting_date if posting_date else raw_date
+                if isinstance(vc_target_date, datetime):
+                    date_str_vc = vc_target_date.strftime("%d%m%Y")
+                else:
+                    try:
+                        dt = datetime.strptime(safe_str(vc_target_date), "%d-%b-%y")
+                        date_str_vc = dt.strftime("%d%m%Y")
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(safe_str(vc_target_date), "%d/%m/%Y")
+                            date_str_vc = dt.strftime("%d%m%Y")
+                        except ValueError:
+                            date_str_vc = safe_str(vc_target_date).replace("-", "").replace("/", "")[:8].ljust(8, '0')
+
+                branch_str = str(row[7]).strip() if len(row) > 7 and row[7] else "00000"
+                branch_str = branch_str[-5:].zfill(5)
+                
+                amount_vc_paise = int(raw_amt * 1000)
+                vc_year = date_str_vc[4:] if len(date_str_vc) == 8 else "2025"
+                year_part = f"{vc_year}00"
+                
+                atm_id_6 = str(atm_id)[-6:].ljust(6, ' ') if atm_id else " "*6
+                txn_seq_4 = str(txn_seq).zfill(4)[-4:] if txn_seq else "0000"
+                
+                dr_ac_str = str(dr_ac).strip() if dr_ac and dr_ac.lower() not in ('none', 'nan') else "0"
+                cr_ac_str = str(cr_ac).strip() if cr_ac and cr_ac.lower() not in ('none', 'nan') else "0"
+                
+                line1 = (
+                    f"02{branch_str}"
+                    f"{dr_ac_str:>017}"
+                    f"{cr_ac_str:>017}"
+                    f"{'0'*17}"
+                    f"{amount_vc_paise:017d}"
+                    f"{date_str_vc}"
+                    f"{' '*10}"
+                    f"{year_part}"
+                    f"{atm_id_6}"
+                    f"{txn_seq_4}"
+                    f"0P0301ATM SWITCH CENTRE DISP RDSL"
+                )
+                
+                ref_str = str(row[0] if row[0] is not None else "").strip()
+                term_bank = str(row[19] if len(row)>19 and row[19] else "SBI(MAURITIUS)LTD ATM COLLECTION ACCOUNTMU").strip()
+                if not term_bank or term_bank.lower() in ('none', 'nan'):
+                    term_bank = "SBI(MAURITIUS)LTD ATM COLLECTION ACCOUNTMU"
+                    
+                line2 = f"{ref_str:<11}{term_bank:<69}N"
+                combined_record = line1 + "\n" + line2
+                
+                prefix_vc = "vc_disp" if type_upper == "VC" else "vd_disp"
+                fname_vc = f"{prefix_vc}_{todays_date}.txt"
+                if fname_vc not in files_content: files_content[fname_vc] = []
+                files_content[fname_vc].append(combined_record)
+                continue
+
+            # --- GENERATE DEBIT LEG ---
+            if dr_ac and dr_ac.lower() != 'none' and dr_ac.lower() != 'nan':
+                 ac_type = "51"
+                 if str(dr_ac).startswith("98") or str(dr_ac).startswith("48"):
+                     ac_type = "54"
+                 
+                 left_part = f"{ac_type}{dr_ac:0>17}{amount_paise:016d}{' '*10}"
+                 right_part = f"{card} {date_str} {atm_id_trunc} {txn_seq}"
+                 line = (left_part + right_part).ljust(101)
+                 
+                 if fname not in files_content: files_content[fname] = []
+                 files_content[fname].append(line)
+
+            # --- GENERATE CREDIT LEG ---
+            if cr_ac and cr_ac.lower() != 'none' and cr_ac.lower() != 'nan':
+                 ac_type = "01"
+                 if str(cr_ac).startswith("98") or str(cr_ac).startswith("48"):
+                     ac_type = "04"
+                 
+                 left_part = f"{ac_type}{cr_ac:0>17}{amount_paise:016d}{' '*10}"
+                 right_part = f"{card} {date_str} {atm_id_trunc} {txn_seq}"
+                 line = (left_part + right_part).ljust(101)
+                 
+                 if fname not in files_content: files_content[fname] = []
+                 files_content[fname].append(line)
+
+        if not os.path.exists(output_dir): os.makedirs(output_dir)
+        for fname, lines in files_content.items():
+            with open(os.path.join(output_dir, fname), "w") as f:
+                f.write("\n".join(lines))
+                
+    except Exception as e:
+        print(f"Error processing Excel: {e}")
 
 def process_file(args):
     inputDirectoryPath = args[0] if len(args) > 0 else ""
@@ -84,19 +197,44 @@ def process_file(args):
     report.setOutputDirectoryPath(outputDirectoryPath)
     report.setInputDirectoryPath(inputDirectoryPath)
 
-    if not os.path.isdir(inputDirectoryPath):
-        report.setError(True)
-        report.setErrorCode("INPUT DIRECTORY DOES NOT EXIST.")
-        print("INPUT DIRECTORY DOES NOT EXIST.")
-        return report
-
-    file_list = [
-        os.path.join(inputDirectoryPath, f)
-        for f in os.listdir(inputDirectoryPath)
-        if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.txt')
-    ]
+    # REMOVED: Blocking isdir check. 
+    # Logic is now handled by flow below.
 
     inputFileValidationRules = InputFileValidationRules()
+
+    # DETECT EXCEL INPUT
+    file_list = []
+    
+    if os.path.isfile(inputDirectoryPath):
+        # We assume if it's a file, it's the Excel input based on usage
+        print(f"Processing Input File: {inputDirectoryPath}")
+        excel_to_cbs_files(inputDirectoryPath, outputDirectoryPath)
+        # Verify the generated text files
+        if os.path.exists(outputDirectoryPath):
+            file_list = [
+                os.path.join(outputDirectoryPath, f)
+                for f in os.listdir(outputDirectoryPath)
+                if os.path.isfile(os.path.join(outputDirectoryPath, f)) and f.lower().endswith('.txt') and "REPORT" not in f
+            ]
+    else:
+        # Standard directory processing
+        if not os.path.exists(inputDirectoryPath):
+             print(f"ERROR: Input path does not exist: {inputDirectoryPath}")
+             report.setError(True)
+             report.setErrorCode("INPUT PATH DOES NOT EXIST")
+             return report
+             
+        if not os.path.isdir(inputDirectoryPath):
+             print(f"ERROR: Input is not a directory or supported file: {inputDirectoryPath}")
+             report.setError(True)
+             report.setErrorCode("INVALID INPUT TYPE")
+             return report
+        
+        file_list = [
+            os.path.join(inputDirectoryPath, f)
+            for f in os.listdir(inputDirectoryPath)
+            if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.txt')
+        ]
 
     # ---------- START of loop over files ----------
     for file_path in file_list:
@@ -122,7 +260,6 @@ def process_file(args):
         except Exception as ex:
             print(f"File read error {file_path}: {ex}")
 
-        # these two lines MUST be inside the for-loop
         inputFileValidationRules.setFileObjectWithRecordDetails(record, file_obj)
         report.getFileEntries().append(file_obj)
     # ---------- END of loop over files ----------
@@ -143,217 +280,11 @@ def process_file(args):
             print(ex)
 
     return report
-def excel_to_cbs_files(excel_path, output_dir):
-    """Convert atm_data.xlsx → CBS fixed-width .dat files (CORRECTED FORMAT)"""
-    try:
-        wb = openpyxl.load_workbook(excel_path)
-        if DISPUTES_SHEET_NAME not in wb.sheetnames:
-            print(f"ERROR: No '{DISPUTES_SHEET_NAME}' sheet found")
-            return None
 
-        disputes_sheet = wb[DISPUTES_SHEET_NAME]
-        
-        # Load known BGL accounts for type deduction
-        bgl_set = load_known_bgl_accounts(wb)
-        
-        files_data = {}  # Group by file_type
-
-        for row_idx, row in enumerate(disputes_sheet.iter_rows(min_row=2, values_only=True), 2):
-            # print(f"DEBUG: Checking Row {row_idx}: Len={len(row)}, Type={row[12] if len(row)>12 else 'None'}")
-            if len(row) < 14 or row[12] is None:  # Skip incomplete rows
-                continue
-            
-            # ... (rest of loop) ...
-
-
-            ref = row[0]
-            txndate = row[1]
-            cardno = row[2]
-            acno = row[3]
-            atmid = row[4]
-            txnno = row[5]
-            amount_str = row[6]
-            branch = row[7]
-            debit_ac = row[8]
-            credit_ac = row[9]
-            status = row[10]
-            posting_date = row[11]
-            file_type = row[12]
-            remarks = row[13] if len(row) > 13 else None
-
-            # Additional columns might exist
-            posting_flag = row[14] if len(row) > 14 else None
-            posting_user = row[15] if len(row) > 15 else None
-            card_fiid = row[16] if len(row) > 16 else None
-            card_bank_name = row[17] if len(row) > 17 else None
-            term_fiid = row[18] if len(row) > 18 else None
-            term_bank_name = row[19] if len(row) > 19 else None
-            comp_type = row[20] if len(row) > 20 else None
-            disp_type = row[21] if len(row) > 21 else None
-            src_ip = row[22] if len(row) > 22 else None
-            user_name = row[23] if len(row) > 23 else None
-
-            if not file_type:
-                continue
-
-            # ✅ FIXED: Convert to paise with EXACT 16 digits
-            try:
-                amount_paise = int(float(amount_str or 0) * 100)
-            except:
-                amount_paise = 0
-            amount_str_fixed = f"{amount_paise:016d}" # EXACTLY 16 digits, zero-padded
-            
-            # CHECK: Skip if NO accounts are present (prevents garbage BGL generation)
-            if not debit_ac and not credit_ac:
-                print(f"Skipping Row {row_idx} (Ref: {ref}): No Debit or Credit Account found.")
-                continue
-            
-            # Generate PAIRED records: One Debit, One Credit
-            
-            # 1. DEBIT Record
-            if debit_ac:
-                dr_type = determine_cbs_type(debit_ac, is_credit_record=False)
-                dr_ac_clean = validate_acno_for_cbs(debit_ac)
-                
-                # DATE Logic: use txndate (row[1]) preferred, else posting_date
-                final_date = "000101"
-                if txndate:
-                    # Check if it's already a datetime object (OpenPyXL default for dates)
-                    if isinstance(txndate, datetime):
-                        final_date = txndate.strftime("%d%m%y")
-                    else:
-                        # Handle string formats common in Excel: "06-Oct-25", "21-Dec-25"
-                        d_str = str(txndate).strip()
-                        try:
-                            # Try DD-Mon-YY (e.g. 06-Oct-25)
-                            dt_obj = datetime.strptime(d_str, "%d-%b-%y")
-                            final_date = dt_obj.strftime("%d%m%y")
-                        except ValueError:
-                            try:
-                                # Try DD/MM/YYYY
-                                dt_obj = datetime.strptime(d_str, "%d/%m/%Y")
-                                final_date = dt_obj.strftime("%d%m%y")
-                            except ValueError:
-                                # Fallback: remove separators and truncate
-                                final_date = d_str.replace("-","").replace("/","")[:6]
-
-                elif posting_date:
-                    final_date = posting_date
-
-                field_pad = " " * 10
-                field_card = (str(cardno) if cardno else "").ljust(16)[:16]
-                field_date = final_date.ljust(6)[:6]
-                
-                # ATM ID: Last 9 digits (e.g. T1BW000138136 -> 000138136)
-                atm_str = str(atmid).strip()
-                field_atmid = atm_str[-9:] if len(atm_str) >= 9 else atm_str.zfill(9)
-                field_atmid = field_atmid[:9]
-
-                # Use full Txn No 
-                field_txn_full = (str(txnno) if txnno else "").strip()
-                
-                txn_details = (
-                    f"{field_pad}{field_card} {field_date} {field_atmid} {field_txn_full}"
-                ).ljust(66)
-
-                cbs_dr_record = (
-                    f"{dr_type:<2}"
-                    f"{dr_ac_clean:<17}"
-                    f"{amount_str_fixed:<16}"
-                    f"{txn_details:<66}"
-                )
-                
-                if file_type not in files_data: files_data[file_type] = []
-                files_data[file_type].append(cbs_dr_record)
-
-            # 2. CREDIT Record
-            if credit_ac:
-                cr_type = determine_cbs_type(credit_ac, is_credit_record=True)
-                cr_ac_clean = validate_acno_for_cbs(credit_ac)
-                
-                # Re-use details
-                cbs_cr_record = (
-                    f"{cr_type:<2}"
-                    f"{cr_ac_clean:<17}"
-                    f"{amount_str_fixed:<16}"
-                    f"{txn_details:<66}"
-                )
-                
-                if file_type not in files_data: files_data[file_type] = []
-                files_data[file_type].append(cbs_cr_record)
-
-
-
-
-
-
-        wb.close()
-
-        # Write .dat files per file_type
-        cbs_files = {}
-        date_suffix = datetime.now().strftime("_%d%m%y")
-        for file_type, records in files_data.items():
-            output_file = os.path.join(output_dir, f"{file_type.upper()}{date_suffix}.txt")
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(records) + '\n')  # Add final newline
-            cbs_files[file_type] = output_file
-        
-        return cbs_files
-
-    except Exception as e:
-        print(f"Excel to CBS conversion failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def map_dispute_to_account_type(row):
-    """Map dispute types to CBS account codes"""
-    comp_type = row[20] if len(row) > 20 else "SOF"
-    disp_type = row[21] if len(row) > 21 else "dd"
-
-    mapping = {
-        ("SOF", "dd"): "54",    # BGL_DR
-        ("FOS", "short"): "62", # SYS_DR
-        ("FOF", "unsucc"): "51",# CUSTOMER_DR
-        ("SOF", "full"): "04",  # BGL_CR
-        ("FOS", "dd"): "12",    # SYS_CR
-    }
-    return mapping.get((comp_type, disp_type), "01")  # Default CUSTOMER_CR
-
-def validate_acno_for_cbs(acno):
-    """FIXED: RIGHT-align with zeros for CBS format"""
-    acno = str(acno or "").lstrip('0')[:13] # Clean to max 13 digits
-    return acno.rjust(17, '0') # RIGHT align, zero pad to 17 chars
-
-def validate_cbs_files(input_dir):
-    """Validate generated CBS files (like original Trickle Feed)"""
-    args = [input_dir, input_dir]  # Input=Output dir for validation
-    report = process_file(args)
-    print(report.getReport())
-    return report
 
 def main():
     if len(sys.argv) >= 3:
-        input_path = sys.argv[1]
-        output_path = sys.argv[2]
-        
-        # Check if input is Excel (ATM Dispute output)
-        if input_path.lower().endswith('.xlsx'):
-            print("Processing Excel -> CBS files...")
-            cbs_files = excel_to_cbs_files(input_path, output_path)
-            if cbs_files:
-                print("CBS files generated:")
-                for file_type, file_path in cbs_files.items():
-                    print(f"  {file_path}")
-                
-                # Run validation on generated files
-                validate_cbs_files(output_path)
-            else:
-                print("Excel processing failed")
-        else:
-            # Original folder processing
-            print("Processing folder files...")
-            process_file(sys.argv[1:])
+        process_file(sys.argv[1:])
     else:
         from file_process_gui import main as gui_main
         gui_main()

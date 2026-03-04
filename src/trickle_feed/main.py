@@ -93,6 +93,63 @@ def excel_to_cbs_files(excel_path, output_dir):
             todays_date = datetime.now().strftime("%d%m%y")
             fname = f"{prefix}_{todays_date}.txt"
 
+            # --- GENERATE VC/VD RECORD ---
+            if type_upper in ("VC", "VD"):
+                vc_target_date = posting_date if posting_date else raw_date
+                if isinstance(vc_target_date, datetime):
+                    date_str_vc = vc_target_date.strftime("%d%m%Y")
+                else:
+                    try:
+                        dt = datetime.strptime(safe_str(vc_target_date), "%d-%b-%y")
+                        date_str_vc = dt.strftime("%d%m%Y")
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(safe_str(vc_target_date), "%d/%m/%Y")
+                            date_str_vc = dt.strftime("%d%m%Y")
+                        except ValueError:
+                            date_str_vc = safe_str(vc_target_date).replace("-", "").replace("/", "")[:8].ljust(8, '0')
+
+                branch_str = str(row[7]).strip() if len(row) > 7 and row[7] else "00000"
+                branch_str = branch_str[-5:].zfill(5)
+                
+                amount_vc_paise = int(raw_amt * 1000)
+                vc_year = date_str_vc[4:] if len(date_str_vc) == 8 else "2025"
+                year_part = f"{vc_year}00"
+                
+                atm_id_6 = str(atm_id)[-6:].ljust(6, ' ') if atm_id else " "*6
+                txn_seq_4 = str(txn_seq).zfill(4)[-4:] if txn_seq else "0000"
+                
+                dr_ac_str = str(dr_ac).strip() if dr_ac and dr_ac.lower() not in ('none', 'nan') else "0"
+                cr_ac_str = str(cr_ac).strip() if cr_ac and cr_ac.lower() not in ('none', 'nan') else "0"
+                
+                line1 = (
+                    f"02{branch_str}"
+                    f"{dr_ac_str:>017}"
+                    f"{cr_ac_str:>017}"
+                    f"{'0'*17}"
+                    f"{amount_vc_paise:017d}"
+                    f"{date_str_vc}"
+                    f"{' '*10}"
+                    f"{year_part}"
+                    f"{atm_id_6}"
+                    f"{txn_seq_4}"
+                    f"0P0301ATM SWITCH CENTRE DISP RDSL"
+                )
+                
+                ref_str = str(row[0] if row[0] is not None else "").strip()
+                term_bank = str(row[19] if len(row)>19 and row[19] else "SBI(MAURITIUS)LTD ATM COLLECTION ACCOUNTMU").strip()
+                if not term_bank or term_bank.lower() in ('none', 'nan'):
+                    term_bank = "SBI(MAURITIUS)LTD ATM COLLECTION ACCOUNTMU"
+                    
+                line2 = f"{ref_str:<11}{term_bank:<69}N"
+                combined_record = line1 + "\n" + line2
+                
+                prefix_vc = "vc_disp" if type_upper == "VC" else "vd_disp"
+                fname_vc = f"{prefix_vc}_{todays_date}.txt"
+                if fname_vc not in files_content: files_content[fname_vc] = []
+                files_content[fname_vc].append(combined_record)
+                continue
+
             # --- GENERATE DEBIT LEG ---
             if dr_ac and dr_ac.lower() != 'none' and dr_ac.lower() != 'nan':
                  ac_type = "51"
