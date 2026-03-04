@@ -1,0 +1,7 @@
+{
+    "python.testing.pytestArgs": [
+        "trickle_feed"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}
