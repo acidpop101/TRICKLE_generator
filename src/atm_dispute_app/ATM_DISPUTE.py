@@ -383,15 +383,26 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
         if disp_type == "short":
              info = get_ac_info(card_fiid)
              if info:
-                 debit1 = info.get("vostro_ac", "")
-                 credit1 = info.get("settl_bgl_ac", "")
-                 debit2 = credit1
-                 file_type1 = file_1_type
+                 if is_v_related:
+                     credit1 = info.get("settl_bgl_ac", "")
+                     debit2 = credit1
+                     credit2 = info.get("vostro_ac", "")
+                     file_type1 = "VD"
+                     file_type2 = "VC"
+                 else:
+                     debit1 = info.get("vostro_ac", "")
+                     credit1 = info.get("settl_bgl_ac", "")
+                     debit2 = credit1
+                     file_type1 = "T1"
+                     file_type2 = "T2"
              else:
                  return [], "Account Details Corresponding to Card FIID Not Found"
              
-             file_type2 = file_2_type
-             if term_fiid == "C001": credit2 = "98582" + atmid_temp1 + "C"
+             if term_fiid == "C001": 
+                 if is_v_related:
+                     debit1 = "98581" + atmid_temp1 + "C"
+                 else:
+                     credit2 = "98582" + atmid_temp1 + "C"
              elif term_fiid == "C021": credit2 = "10309443213"
              elif term_fiid == "C022": credit2 = "10309443177"
              elif term_fiid == "C023": credit2 = "10309443188"
