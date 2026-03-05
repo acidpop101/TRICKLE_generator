@@ -50,6 +50,7 @@ def excel_to_cbs_files(excel_path, output_dir):
             
             dr_ac = safe_str(row[8])
             cr_ac = safe_str(row[9])
+            posting_date = row[11] if len(row) > 11 else None
             
             try:
                 raw_amt = float(row[6]) if row[6] is not None else 0.0
