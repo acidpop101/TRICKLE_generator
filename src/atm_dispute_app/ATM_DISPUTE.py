@@ -379,19 +379,24 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
         if disp_type == "short":
              info = get_ac_info(card_fiid)
              if info:
-                  if credit_to == "cust":
-                      if len(acno) != 11:
-                          return [], f"Invalid Credit Account: {acno}"
-                      credit2 = acno
-                  else:
-                      credit2 = info.get("vostro_ac", "")
-                  
-                  credit1 = info.get("settl_bgl_ac", "")
-                  debit2 = credit1
-                  if card_fiid == "F005": file_type2 = "T2"
-                  else: file_type1 = "VD"; file_type2 = "N"
+                 debit1 = info.get("vostro_ac", "")
+                 credit1 = info.get("settl_bgl_ac", "")
+                 debit2 = credit1
+                 if card_fiid == "F005": file_type1 = "T1"
+                 else: file_type1 = "VD"
              else:
-                  return [], "Account Details Corresponding to Card FIID Not Found"
+                 return [], "Account Details Corresponding to Card FIID Not Found"
+             
+             file_type2 = "T2"
+             if term_fiid == "C001": credit2 = "98582" + atmid_temp1 + "C"
+             elif term_fiid == "C021": credit2 = "10309443213"
+             elif term_fiid == "C022": credit2 = "10309443177"
+             elif term_fiid == "C023": credit2 = "10309443188"
+             elif term_fiid == "C024": credit2 = "10309443235"
+             elif term_fiid == "C025": credit2 = "10309443246"
+             elif term_fiid == "C027": credit2 = "10309443202"
+             else: return [], "Invalid Term FIID"
+             
         else:
              info = get_ac_info(card_fiid)
              if info:
@@ -412,6 +417,7 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
              elif term_fiid == "C024": file_type1, debit1 = "T1", "10309443235"
              elif term_fiid == "C025": file_type1, debit1 = "T1", "10309443246"
              elif term_fiid == "C027": file_type1, debit1 = "T1", "10309443202"
+             else: return [], "Invalid Term FIID"
                  
     elif comp_type == "FOF":
          info_term = get_ac_info(term_fiid)
@@ -440,6 +446,17 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                  file_type3 = "VC"
          else:
              return [], "Account Details Corresponding to Card FIID Not Found"
+
+         if term_fiid == "C001":
+             file_type1 = "T1"
+             debit1 = "98581" + atmid_temp1 + "C"
+         elif term_fiid == "C021": file_type1, debit1 = "T1", "10309443213"
+         elif term_fiid == "C022": file_type1, debit1 = "T1", "10309443177"
+         elif term_fiid == "C023": file_type1, debit1 = "T1", "10309443188"
+         elif term_fiid == "C024": file_type1, debit1 = "T1", "10309443235"
+         elif term_fiid == "C025": file_type1, debit1 = "T1", "10309443246"
+         elif term_fiid == "C027": file_type1, debit1 = "T1", "10309443202"
+
 
     def resolve_check_digit(ac):
         if str(ac).endswith("C"):

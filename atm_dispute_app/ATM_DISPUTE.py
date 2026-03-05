@@ -21,11 +21,10 @@ from openpyxl.utils.exceptions import InvalidFileException
 from datetime import datetime
 
 # Define the single Excel file and sheet names
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atm_data.xlsx")
+# Define the single Excel file and sheet names
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "atm_data.xlsx")
 BIN_SHEET_NAME = "bin_table"
 DISPUTES_SHEET_NAME = "disputes"
-# Constant for the new ATM ID validation sheet name
-ATM_IDS_SHEET_NAME = "valid_atmid"
 AC_DETAILS_SHEET_NAME = "ac_details"
 
 def getCheckDigitNumber(acc_no):
@@ -116,8 +115,7 @@ def create_initial_excel_file():
              wb.remove(wb['Sheet'])
 
         wb.create_sheet(BIN_SHEET_NAME)
-        wb.create_sheet(DISPUTES_SHEET_NAME)
-        wb.create_sheet(ATM_IDS_SHEET_NAME).append(["ATMID"]) 
+        wb.create_sheet(DISPUTES_SHEET_NAME) 
         wb.create_sheet(AC_DETAILS_SHEET_NAME) # Create ac_details sheet
         
         disputes_sheet = wb[DISPUTES_SHEET_NAME]
@@ -139,6 +137,19 @@ def create_initial_excel_file():
                 wb.create_sheet(AC_DETAILS_SHEET_NAME)
                 save_needed = True
             
+            if BIN_SHEET_NAME not in wb.sheetnames:
+                wb.create_sheet(BIN_SHEET_NAME).append(["BIN", "FIID", "BANK_NAME"])
+                save_needed = True
+
+            if DISPUTES_SHEET_NAME not in wb.sheetnames:
+                 disputes_sheet = wb.create_sheet(DISPUTES_SHEET_NAME)
+                 headers = ["ref", "txndate", "cardno", "acno", "atmid", "txnno", "amount", "branch",
+                            "debit_ac", "credit_ac", "status", "posting_date", "file_type",
+                            "remarks", "posting_flag", "posting_user", "card_fiid", "card_bank_name",
+                            "term_fiid", "term_bank_name", "comp_type", "disp_type", "src_ip", "user_name"]
+                 disputes_sheet.append(headers)
+                 save_needed = True
+            
             # Populate if empty
             if wb[AC_DETAILS_SHEET_NAME].max_row <= 1:
                 populate_ac_details_sheet(wb)
@@ -146,7 +157,7 @@ def create_initial_excel_file():
                 
             if save_needed:
                 wb.save(DATA_FILE)
-                print(f"Updated data file with {AC_DETAILS_SHEET_NAME}")
+                print(f"Updated data file with missing sheets.")
         except Exception as e:
             print(f"Error checking/updating Excel file: {e}")
         finally:
@@ -162,18 +173,7 @@ def load_sheet_dict(filename, sheet_name, key_column):
         if sheet_name not in wb.sheetnames:
             wb.close()
             return {}
-        sheet = wb[sheet_name]
-        
-        if sheet_name == ATM_IDS_SHEET_NAME:
-            data_set = set()
-            # Iterate through rows starting from the second row (skipping header)
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                # Ensure the cell has a value before adding it
-                if row and row is not None:
-                    # Strip whitespace and convert to uppercase for robust matching
-                    data_set.add(str(row[0]).strip().upper())
-            return data_set
-        
+        sheet = wb[sheet_name]        
         # Original logic for multi-column sheets like bin_table
         data_dict = {}
         for row in sheet.iter_rows(min_row=2, values_only=True):
@@ -228,33 +228,14 @@ def append_fo_atm_record(record):
     wb.save(DATA_FILE)
     wb.close()
 
-# -----------------------------------------------------------
-# REPLACED CODE BLOCK: New ATM ID Validation Logic
-# -----------------------------------------------------------
-
-def is_valid_atm_id(atmid, valid_atm_ids_set):
-    """
-    Validates the ATM ID by checking its presence in the provided set of valid IDs 
-    loaded from the 'valid_atmid' Excel sheet.
-    """
-    # Simply check if the user input exists in the set of valid IDs
-    if atmid.upper() in valid_atm_ids_set:
-        return True, "" # Valid ID found in the list, no error message needed
-    else:
-        # Debugging info
-        print(f"DEBUG: Validation failed for ID: '{atmid.upper()}'")
-        print(f"DEBUG: Valid IDs Set Size: {len(valid_atm_ids_set)}")
-        if len(valid_atm_ids_set) > 0:
-             sample = list(valid_atm_ids_set)[:5]
-             print(f"DEBUG: Sample IDs: {sample}")
-             
-        return False, f"ATM ID '{atmid}' is invalid or not in approved list (Loaded {len(valid_atm_ids_set)} IDs)."
 
 # -----------------------------------------------------------
 
 # This function remains unchanged, as it expects a structured ATM ID format 
 # to extract the 5th character's information.
 def get_term_fiid(atmid):
+    if len(atmid) < 5:
+        return "NIL"
     term_bank = atmid[4]
     if term_bank == "F":
         return atmid[4:8]
@@ -266,7 +247,7 @@ def get_term_fiid(atmid):
 
 def gettermfiid(self, atmid):
     atmid = atmid.strip().upper()
-    if len(atmid) == 0: return "NIL", "Invalid ATM ID"
+    if len(atmid) < 5: return "NIL", "Invalid ATM ID"
     termbank = atmid[4]  # 5th char (0-indexed)
     at13 = atmid[0:3]
     at4 = atmid[3]
@@ -319,272 +300,190 @@ def validate_acno(acno):
     return acno
 
 def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type, credit_to, ac_details):
-    """
-    Python port of the JSP logic for computing accounting legs.
-    Returns: (legs, error_message)
-          legs: list of dicts {debit_ac, credit_ac, file_type}
-          error_message: string if rejected, else None
-    """
     legs = []
     
-    # -------------------------------------------------------------
-    # 1. Helper / Setup
-    # -------------------------------------------------------------
-    
-    # Clean branch to 5 digits (logic from JSP)
-    # JSP: "if(comp_type.equals("SOF")){ branch=dr_branch; }" where dr_branch from param OR cardno
-    # We assume 'branch' passed in is already correct (cardno based).
     branch = str(branch).zfill(5)
+    atmid_temp1 = atmid[5:10] if len(atmid) >= 10 else branch
     
-    # Pre-defined Logic for C0xx Accounts (for debit1/credit2 mappings)
-    # Logic extracted from JSP if/else chains
-    def get_c0xx_account(fiid, mode='debit'):
-        # mode='debit' for SOF debit1 logic, mode='credit' for T2 credit2 logic (mostly same)
-        if fiid == "C021": return "10309443213"
-        if fiid == "C022": return "10309443177"
-        if fiid == "C023": return "10309443188"
-        if fiid == "C024": return "10309443235"
-        if fiid == "C025": return "10309443246"
-        if fiid == "C027": return "10309443202"
-        return None
-
-    # Load account details helper
     def get_ac_info(fiid):
-        # ac_details keys: 'vostro_ac', 'settl_bgl_ac' (mapped to collection_ac)
-        info = ac_details.get(fiid)
-        if not info: return None
-        return info
+        return ac_details.get(fiid)
 
-    debit1 = ""
-    credit1 = ""
-    file_type1 = "N"
-    
-    debit2 = ""
-    credit2 = ""
-    file_type2 = "N"
-    
-    debit3 = ""
-    credit3 = ""
-    file_type3 = "N"
-    
-    # -------------------------------------------------------------
-    # 2. Logic Implementation
-    # -------------------------------------------------------------
-    
-    # ======== CASE: SOF ========
+    file_type1, file_type2, file_type3 = "N", "N", "N"
+    debit1, debit2, debit3 = "", "", ""
+    credit1, credit2, credit3 = "", "", ""
+
+    if term_fiid == "C001":
+        file_type1 = "T1"
+        debit1 = "98581" + atmid_temp1 + "C"
+    elif term_fiid == "C021": file_type1, debit1 = "T1", "10309443213"
+    elif term_fiid == "C022": file_type1, debit1 = "T1", "10309443177"
+    elif term_fiid == "C023": file_type1, debit1 = "T1", "10309443188"
+    elif term_fiid == "C024": file_type1, debit1 = "T1", "10309443235"
+    elif term_fiid == "C025": file_type1, debit1 = "T1", "10309443246"
+    elif term_fiid == "C027": file_type1, debit1 = "T1", "10309443202"
+
     if comp_type == "SOF":
-        if disp_type in ("dd", "98581", "unsucc", "full"):
+        if term_fiid == "C001":
             debit1 = "2399724042928"
             file_type1 = "CR"
-            
             if card_fiid == "C001":
                 if credit_to == "cust":
                     if len(acno) != 11:
-                        return [], f"Invalid Credit Account: {acno}. Must be 11 digits for 'cust'."
+                        return [], f"Invalid Credit Account: {acno}"
                     credit1 = acno
                 else:
                     credit1 = "98582" + branch + "C"
             else:
                 return [], "Dispute Type Not Allowed for Card FIID"
-                
-            # JSP: "rs_ac1=stmt.executeQuery... where fiid=term_fiid"
-            # It checks if term_fiid exists, if not -> "Invalid Term FIID". 
-            # Note: For this branch, it actually DOESN'T use the result rs_ac1 for account assignment, 
-            # but it enforces the check.
-            info = get_ac_info(term_fiid)
-            if not info:
-                return [], "Invalid Term FIID (Not found in ac_details)"
-                
-        elif disp_type == "short":
-            file_type1 = "T1"
-            
-            # -- Leg 1 Debit Logic --
-            if card_fiid == "C001":
-                debit1 = "98581" + branch + "C"
-            else:
-                special_ac = get_c0xx_account(card_fiid)
-                if special_ac:
-                    debit1 = special_ac
-                else:
-                    return [], "Dispute Type Not Allowed for Card FIID"
-            
-            # -- Leg 1 Credit (and T2 Debit) Logic --
+        else:
             info = get_ac_info(term_fiid)
             if info:
-                # JSP: credit1=rs_ac1.getString("collection_ac"); credit2=rs_ac1.getString("vostro_ac");
-                # Wait: JSP says:
-                # credit1=rs_ac1.getString("collection_ac");
-                # credit2=rs_ac1.getString("vostro_ac");  <-- Suspicious? 
-                # Actually typically T1 credit is collection. 
-                # Let's re-read JSP carefully:
-                #   credit1=rs_ac1.getString("collection_ac");
-                #   credit2=rs_ac1.getString("vostro_ac");
-                #   debit2=credit1; 
-                #
-                # Wait, usually T2 debit is Collection. Yes, debit2=credit1.
-                # BUT credit2 is Vostro? 
-                # Let's check the rest of the flow...
-                #
-                # Ah, wait. Inside SOF->Short:
-                # if(term_fiid.equals("F005")){ file_type2="T2"; } else { file_type2="VC"; }
-                # 
-                # Actually, look at the JSP logic for SOF credit2 assignment later:
-                # IT OVERWRITES credit2 later!
-                # "if(term_fiid.equals("C001")) ... credit2=98582...C"
-                # So the initial `credit2=vostro` from rs_ac1 might be ignored or is for specific cases.
-                
-                credit1 = info.get("settl_bgl_ac", "") # Collection AC
-                # We will set debit2 temporarily, final logic handles it
-                debit2 = credit1 
-            else:
-                return [], "Invalid Term FIID"
-            
-            # -- File Type 2 determination --
-            if term_fiid == "F005":
-                file_type2 = "T2"
-            else:
-                file_type2 = "VC"
-                
-            # -- Leg 2 Credit Logic --
-            if term_fiid == "C001":
-                # temp1=atmid.substring(5,10); credit2="98582"+temp1+"C";
-                if len(atmid) >= 10:
-                     temp1 = atmid[5:10]
-                     base_c2 = "98582" + temp1
-                     chk_c2 = getCheckDigitNumber(base_c2)
-                     credit2 = base_c2 + chk_c2
+                debit1 = info.get("vostro_ac", "")
+                credit1 = info.get("settl_bgl_ac", "")
+                debit2 = credit1
+                if disp_type == "short":
+                    if term_fiid == "F005":
+                        file_type1 = "T1"
+                        file_type2 = "T2"
+                    else:
+                        file_type1 = "T1"
+                        file_type2 = "VC"
                 else:
-                     # Fallback if ATMID is short? JSP assumes valid.
-                     base_c2 = "98582" + branch
-                     chk_c2 = getCheckDigitNumber(base_c2)
-                     credit2 = base_c2 + chk_c2
-            elif term_fiid in ("C021", "C022", "C023", "C024", "C025", "C027"):
-                c_acc = get_c0xx_account(term_fiid)
-                if c_acc: credit2 = c_acc
+                    if term_fiid == "F005":
+                        file_type1 = "T1"
+                        file_type2 = "T2"
+                    else:
+                        file_type1 = "VD"
+                        file_type2 = "VC"
             else:
-                 return [], "Invalid Term FIID (for Credit2 logic)"
-            
-            # -- Leg 2 Override for Card FIID == C001 (Customer logic) --
+                return [], "Account Details Corresponding to Term FIID Not Found"
+                
             if card_fiid == "C001":
                 file_type2 = "T2"
                 if credit_to == "cust":
-                     if len(acno) != 11:
-                         return [], f"Invalid Credit Account: {acno}"
-                     credit2 = acno
+                    if len(acno) != 11:
+                        return [], f"Invalid Credit Account: {acno}"
+                    credit2 = acno
                 else:
-                     base_c2 = "98582" + branch
-                     chk_c2 = getCheckDigitNumber(base_c2)
-                     credit2 = base_c2 + chk_c2
-
-    # ======== CASE: FOS ========
+                    credit2 = "98582" + branch + "C"
+            elif card_fiid == "C021": file_type2, credit2 = "T2", "10309443213"
+            elif card_fiid == "C022": file_type2, credit2 = "T2", "10309443177"
+            elif card_fiid == "C023": file_type2, credit2 = "T2", "10309443188"
+            elif card_fiid == "C024": file_type2, credit2 = "T2", "10309443235"
+            elif card_fiid == "C025": file_type2, credit2 = "T2", "10309443246"
+            elif card_fiid == "C027": file_type2, credit2 = "T2", "10309443202"
+            else:
+                return [], "Invalid Card FIID"
+                     
     elif comp_type == "FOS":
         if disp_type == "short":
-             # -- Leg 1 Lookup (Card FIID) --
              info = get_ac_info(card_fiid)
              if info:
-                  # T1: Debit 98581... -> Credit Settlement BGL
-                  # Calc Check Digit for 98581 + branch
-                  base_ac = "98581" + branch
-                  chk = getCheckDigitNumber(base_ac)
-                  debit1 = base_ac + chk
-                  
-                  credit1 = info.get("settl_bgl_ac", "") # 48979...
-                  
-                  # T2: Debit Settlement -> Credit Vostro
-                  debit2 = credit1
-                  credit2 = info.get("vostro_ac", "") # 30118...
-                  
-                  if card_fiid == "F005":
-                      file_type1 = "T1"
-                  else:
-                      file_type1 = "VD"
+                 debit1 = info.get("vostro_ac", "")
+                 credit1 = info.get("settl_bgl_ac", "")
+                 debit2 = credit1
+                 if card_fiid == "F005": file_type1 = "T1"
+                 else: file_type1 = "VD"
              else:
-                  return [], "Account Details Corresponding to Card FIID Not Found"
+                 return [], "Account Details Corresponding to Card FIID Not Found"
              
-             # -- Leg 2 Logic (Term FIID) --
              file_type2 = "T2"
-             if term_fiid == "C001":
-                 if len(atmid) >= 10:
-                     temp1 = atmid[5:10]
-                     base_c2 = "98582" + temp1
-                     chk_c2 = getCheckDigitNumber(base_c2)
-                     credit2 = base_c2 + chk_c2
-                 else:
-                     base_c2 = "98582" + branch
-                     chk_c2 = getCheckDigitNumber(base_c2)
-                     credit2 = base_c2 + chk_c2
-             elif term_fiid in ("C021", "C022", "C023", "C024", "C025", "C027"):
-                 c_acc = get_c0xx_account(term_fiid)
-                 if c_acc: credit2 = c_acc
+             if term_fiid == "C001": credit2 = "98582" + atmid_temp1 + "C"
+             elif term_fiid == "C021": credit2 = "10309443213"
+             elif term_fiid == "C022": credit2 = "10309443177"
+             elif term_fiid == "C023": credit2 = "10309443188"
+             elif term_fiid == "C024": credit2 = "10309443235"
+             elif term_fiid == "C025": credit2 = "10309443246"
+             elif term_fiid == "C027": credit2 = "10309443202"
+             else: return [], "Invalid Term FIID"
+             
+        else:
+             info = get_ac_info(card_fiid)
+             if info:
+                 credit2 = info.get("vostro_ac", "")
+                 credit1 = info.get("settl_bgl_ac", "")
+                 debit2 = credit1
+                 if card_fiid == "F005": file_type2 = "T2"
+                 else: file_type2 = "VC"
              else:
-                 return [], "Invalid Term FIID"
+                 return [], "Account Details Corresponding to Card FIID Not Found"
+             
+             if term_fiid == "C001":
+                 file_type1 = "T1"
+                 debit1 = "98581" + atmid_temp1 + "C"
+             elif term_fiid == "C021": file_type1, debit1 = "T1", "10309443213"
+             elif term_fiid == "C022": file_type1, debit1 = "T1", "10309443177"
+             elif term_fiid == "C023": file_type1, debit1 = "T1", "10309443188"
+             elif term_fiid == "C024": file_type1, debit1 = "T1", "10309443235"
+             elif term_fiid == "C025": file_type1, debit1 = "T1", "10309443246"
+             elif term_fiid == "C027": file_type1, debit1 = "T1", "10309443202"
+             else: return [], "Invalid Term FIID"
                  
-    # ======== CASE: FOF ========
     elif comp_type == "FOF":
-         # -- Leg 1 (Term FIID) --
          info_term = get_ac_info(term_fiid)
          if info_term:
              debit1 = info_term.get("vostro_ac", "")
              credit1 = info_term.get("settl_bgl_ac", "")
+             if term_fiid == "F005": file_type1 = "T1"
+             else: file_type1 = "VD"
              
-             if term_fiid == "F005":
-                 file_type1 = "T1"
-             else:
-                 file_type1 = "VD"
-             
-             # Determine next file type
-             if file_type1 == "VD":
-                 file_type2 = "T1"
-             else:
-                 file_type2 = "T2"
-                 
+             if file_type1 == "VD": file_type2 = "T1"
+             else: file_type2 = "T2"
              debit2 = credit1
          else:
              return [], "Account Details Corresponding to Term FIID Not Found"
          
-         # -- Leg 2/3 (Card FIID) --
          info_card = get_ac_info(card_fiid)
          if info_card:
-             # JSP: credit3=vostro, credit2=collection, debit3=credit2
-             val_vostro = info_card.get("vostro_ac", "")
-             val_coll = info_card.get("settl_bgl_ac", "")
-             
-             credit3 = val_vostro
-             credit2 = val_coll
-             debit3 = credit2 # JSP: debit3=credit2
+             credit3 = info_card.get("vostro_ac", "")
+             credit2 = info_card.get("settl_bgl_ac", "")
+             debit3 = credit2
              
              if card_fiid == "F005":
-                 if file_type2 == "T1":
-                     file_type3 = "T2"
-                 else:
-                     file_type3 = "T3"
+                 if file_type2 == "T1": file_type3 = "T2"
+                 else: file_type3 = "T3"
              else:
                  file_type3 = "VC"
          else:
              return [], "Account Details Corresponding to Card FIID Not Found"
 
-    # -------------------------------------------------------------
-    # 3. Construct Legs List
-    # -------------------------------------------------------------
-    # Filter out empty/N legs
-    
-    # Filter out empty/N legs
+         if term_fiid == "C001":
+             file_type1 = "T1"
+             debit1 = "98581" + atmid_temp1 + "C"
+         elif term_fiid == "C021": file_type1, debit1 = "T1", "10309443213"
+         elif term_fiid == "C022": file_type1, debit1 = "T1", "10309443177"
+         elif term_fiid == "C023": file_type1, debit1 = "T1", "10309443188"
+         elif term_fiid == "C024": file_type1, debit1 = "T1", "10309443235"
+         elif term_fiid == "C025": file_type1, debit1 = "T1", "10309443246"
+         elif term_fiid == "C027": file_type1, debit1 = "T1", "10309443202"
+
+
+    def resolve_check_digit(ac):
+        if str(ac).endswith("C"):
+            base = str(ac)[:-1]
+            return base + getCheckDigitNumber(base)
+        return ac
+        
     def is_valid_ac(ac):
-        return ac and str(ac).strip() != "" and str(ac).strip() != "0"
+        val = str(ac).strip()
+        return val and val != "" and val != "0"
+
+    debit1, credit1 = resolve_check_digit(debit1), resolve_check_digit(credit1)
+    debit2, credit2 = resolve_check_digit(debit2), resolve_check_digit(credit2)
+    debit3, credit3 = resolve_check_digit(debit3), resolve_check_digit(credit3)
 
     if file_type1 != "N" and is_valid_ac(debit1) and is_valid_ac(credit1):
         legs.append({"debit_ac": debit1, "credit_ac": credit1, "file_type": file_type1})
-        
     if file_type2 != "N" and is_valid_ac(debit2) and is_valid_ac(credit2):
         legs.append({"debit_ac": debit2, "credit_ac": credit2, "file_type": file_type2})
-        
     if file_type3 != "N" and is_valid_ac(debit3) and is_valid_ac(credit3):
         legs.append({"debit_ac": debit3, "credit_ac": credit3, "file_type": file_type3})
         
     if not legs:
-        return [], "No valid legs could be generated (Accounts were missing or empty)."
+        return [], "No valid legs could be generated."
         
     return legs, None
+
 
 class ATMDisputeApp:
     def __init__(self, root):
@@ -594,7 +493,6 @@ class ATMDisputeApp:
         create_initial_excel_file() 
         
         self.bin_table = load_sheet_dict(DATA_FILE, BIN_SHEET_NAME, 0)
-        self.valid_atm_ids_set= load_sheet_dict(DATA_FILE, ATM_IDS_SHEET_NAME, 0)
         self.ac_details = load_ac_details(DATA_FILE)
       
 
@@ -615,11 +513,7 @@ class ATMDisputeApp:
         for i, field_conf in enumerate(fields_config):
             self.messagebox =tk.Text(root, height=10, width=80)
             self.messagebox.grid(row=len(fields_config)+2, column=0, columnspan=3, pady=5, padx=5, sticky="nsew")
-            self.messagebox.config(state=tk.DISABLED)
-
-        if not self.valid_atm_ids_set:
-            self.log_message(f"Warning: '{ATM_IDS_SHEET_NAME}' sheet is empty. ATM ID validation will fail.")
-        
+            self.messagebox.config(state=tk.DISABLED)        
         # Data structure to hold input widgets
         self.entries = {}
         # Data structures to hold Radiobutton variables
@@ -699,13 +593,7 @@ class ATMDisputeApp:
             txndate = "31/12/1999"
         txndate_fmt = format_txn_date(txndate)
 
-        user_name = self.user_name 
-
-        valid_atm, rej_msg = is_valid_atm_id(atmid, self.valid_atm_ids_set)
-        if not valid_atm:
-            messagebox.showerror("Validation Error", rej_msg)
-            return
-
+        user_name = self.user_name
         term_fiid = get_term_fiid(atmid)
         # get_bank_name_by_fiid requires the full dict, but self.bin_table is the dict.
         term_bank_name = get_bank_name_by_fiid(term_fiid, self.bin_table)
