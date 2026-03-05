@@ -376,18 +376,21 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                 return [], "Invalid Card FIID"
                      
     elif comp_type == "FOS":
+        is_v_related = (card_fiid != "F005")
+        file_1_type = "VD" if is_v_related else "T1"
+        file_2_type = "VC" if is_v_related else "T2"
+
         if disp_type == "short":
              info = get_ac_info(card_fiid)
              if info:
                  debit1 = info.get("vostro_ac", "")
                  credit1 = info.get("settl_bgl_ac", "")
                  debit2 = credit1
-                 if card_fiid == "F005": file_type1 = "T1"
-                 else: file_type1 = "VD"
+                 file_type1 = file_1_type
              else:
                  return [], "Account Details Corresponding to Card FIID Not Found"
              
-             file_type2 = "T2"
+             file_type2 = file_2_type
              if term_fiid == "C001": credit2 = "98582" + atmid_temp1 + "C"
              elif term_fiid == "C021": credit2 = "10309443213"
              elif term_fiid == "C022": credit2 = "10309443177"
@@ -403,20 +406,19 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                  credit2 = info.get("vostro_ac", "")
                  credit1 = info.get("settl_bgl_ac", "")
                  debit2 = credit1
-                 if card_fiid == "F005": file_type2 = "T2"
-                 else: file_type2 = "VC"
+                 file_type2 = file_2_type
              else:
                  return [], "Account Details Corresponding to Card FIID Not Found"
              
              if term_fiid == "C001":
-                 file_type1 = "T1"
+                 file_type1 = file_1_type
                  debit1 = "98581" + atmid_temp1 + "C"
-             elif term_fiid == "C021": file_type1, debit1 = "T1", "10309443213"
-             elif term_fiid == "C022": file_type1, debit1 = "T1", "10309443177"
-             elif term_fiid == "C023": file_type1, debit1 = "T1", "10309443188"
-             elif term_fiid == "C024": file_type1, debit1 = "T1", "10309443235"
-             elif term_fiid == "C025": file_type1, debit1 = "T1", "10309443246"
-             elif term_fiid == "C027": file_type1, debit1 = "T1", "10309443202"
+             elif term_fiid == "C021": file_type1, debit1 = file_1_type, "10309443213"
+             elif term_fiid == "C022": file_type1, debit1 = file_1_type, "10309443177"
+             elif term_fiid == "C023": file_type1, debit1 = file_1_type, "10309443188"
+             elif term_fiid == "C024": file_type1, debit1 = file_1_type, "10309443235"
+             elif term_fiid == "C025": file_type1, debit1 = file_1_type, "10309443246"
+             elif term_fiid == "C027": file_type1, debit1 = file_1_type, "10309443202"
              else: return [], "Invalid Term FIID"
                  
     elif comp_type == "FOF":

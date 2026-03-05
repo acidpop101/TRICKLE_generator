@@ -80,12 +80,14 @@ def excel_to_cbs_files(excel_path, output_dir):
                 continue
 
             type_upper = file_type.upper()
-            if type_upper in ("T1", "VD"):
+            if type_upper == "T1":
                 prefix = "tffo1_disp"
             elif type_upper in ("T2", "T3"):
                 prefix = "tffo2_disp"
             elif type_upper == "VC":
                 prefix = "vc_disp"
+            elif type_upper == "VD":
+                prefix = "vd_disp"
             elif type_upper == "CR":
                 prefix = "cr_disp"
             else:
