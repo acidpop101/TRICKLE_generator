@@ -120,9 +120,7 @@ def create_initial_excel_file():
         
         disputes_sheet = wb[DISPUTES_SHEET_NAME]
         headers = ["ref", "txndate", "cardno", "acno", "atmid", "txnno", "amount", "branch",
-                   "debit_ac", "credit_ac", "status", "posting_date", "file_type",
-                   "remarks", "posting_flag", "posting_user", "card_fiid", "card_bank_name",
-                   "term_fiid", "term_bank_name", "comp_type", "disp_type", "src_ip", "user_name"]
+                   "debit_ac", "credit_ac", "status", "posting_date", "file_type"]
         disputes_sheet.append(headers)
         
         populate_ac_details_sheet(wb) # Populate it
@@ -144,9 +142,7 @@ def create_initial_excel_file():
             if DISPUTES_SHEET_NAME not in wb.sheetnames:
                  disputes_sheet = wb.create_sheet(DISPUTES_SHEET_NAME)
                  headers = ["ref", "txndate", "cardno", "acno", "atmid", "txnno", "amount", "branch",
-                            "debit_ac", "credit_ac", "status", "posting_date", "file_type",
-                            "remarks", "posting_flag", "posting_user", "card_fiid", "card_bank_name",
-                            "term_fiid", "term_bank_name", "comp_type", "disp_type", "src_ip", "user_name"]
+                            "debit_ac", "credit_ac", "status", "posting_date", "file_type"]
                  disputes_sheet.append(headers)
                  save_needed = True
             
@@ -342,19 +338,11 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                 credit1 = info.get("settl_bgl_ac", "")
                 debit2 = credit1
                 if disp_type == "short":
-                    if term_fiid == "F005":
-                        file_type1 = "T1"
-                        file_type2 = "T2"
-                    else:
-                        file_type1 = "T1"
-                        file_type2 = "VC"
+                    file_type1 = "T1"
+                    file_type2 = "VC"
                 else:
-                    if term_fiid == "F005":
-                        file_type1 = "T1"
-                        file_type2 = "T2"
-                    else:
-                        file_type1 = "VD"
-                        file_type2 = "VC"
+                    file_type1 = "VD"
+                    file_type2 = "VC"
             else:
                 return [], "Account Details Corresponding to Term FIID Not Found"
                 
@@ -376,33 +364,24 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                 return [], "Invalid Card FIID"
                      
     elif comp_type == "FOS":
-        is_v_related = (card_fiid != "F005")
-        file_1_type = "VD" if is_v_related else "T1"
-        file_2_type = "VC" if is_v_related else "T2"
+        file_1_type = "VD"
+        file_2_type = "VC"
 
         if disp_type == "short":
              info = get_ac_info(card_fiid)
              if info:
-                 if is_v_related:
-                     credit1 = info.get("settl_bgl_ac", "")
-                     debit2 = credit1
-                     credit2 = info.get("vostro_ac", "")
-                     file_type1 = "VD"
-                     file_type2 = "VC"
-                 else:
-                     debit1 = info.get("vostro_ac", "")
-                     credit1 = info.get("settl_bgl_ac", "")
-                     debit2 = credit1
-                     file_type1 = "T1"
-                     file_type2 = "T2"
+                 credit1 = info.get("settl_bgl_ac", "")
+                 debit2 = credit1
+                 credit2 = info.get("vostro_ac", "")
+                 file_type1 = "VD"
+                 file_type2 = "VC"
              else:
                  return [], "Account Details Corresponding to Card FIID Not Found"
              
              if term_fiid == "C001": 
-                 if is_v_related:
-                     debit1 = "98581" + atmid_temp1 + "C"
-                 else:
-                     credit2 = "98582" + atmid_temp1 + "C"
+                 file_type1 = "T1"
+                 file_type2 = "T2"
+                 debit1 = "98581" + atmid_temp1 + "C"
              elif term_fiid == "C021": credit2 = "10309443213"
              elif term_fiid == "C022": credit2 = "10309443177"
              elif term_fiid == "C023": credit2 = "10309443188"
@@ -422,7 +401,8 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
                  return [], "Account Details Corresponding to Card FIID Not Found"
              
              if term_fiid == "C001":
-                 file_type1 = file_1_type
+                 file_type1 = "T1"
+                 file_type2 = "T2"
                  debit1 = "98581" + atmid_temp1 + "C"
              elif term_fiid == "C021": file_type1, debit1 = file_1_type, "10309443213"
              elif term_fiid == "C022": file_type1, debit1 = file_1_type, "10309443177"
@@ -437,11 +417,8 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
          if info_term:
              debit1 = info_term.get("vostro_ac", "")
              credit1 = info_term.get("settl_bgl_ac", "")
-             if term_fiid == "F005": file_type1 = "T1"
-             else: file_type1 = "VD"
-             
-             if file_type1 == "VD": file_type2 = "T1"
-             else: file_type2 = "T2"
+             file_type1 = "VD"
+             file_type2 = "T1"
              debit2 = credit1
          else:
              return [], "Account Details Corresponding to Term FIID Not Found"
@@ -451,12 +428,7 @@ def compute_legs(card_fiid, term_fiid, branch, acno, atmid, comp_type, disp_type
              credit3 = info_card.get("vostro_ac", "")
              credit2 = info_card.get("settl_bgl_ac", "")
              debit3 = credit2
-             
-             if card_fiid == "F005":
-                 if file_type2 == "T1": file_type3 = "T2"
-                 else: file_type3 = "T3"
-             else:
-                 file_type3 = "VC"
+             file_type3 = "VC"
          else:
              return [], "Account Details Corresponding to Card FIID Not Found"
 

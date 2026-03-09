@@ -1,0 +1,102 @@
+================================================================================
+STANDARD OPERATING PROCEDURE (SOP)
+ATM DISPUTE AND TRICKLE FEED GENERATOR
+================================================================================
+
+INTRODUCTION:
+This application processes ATM dispute data and automatically generates the 
+specially formatted text files (Trickle Feeds) required by the Core Banking 
+System (CBS). It helps ensure disputes are logged and settled accurately.
+
+This guide is meant for operators and requires no technical or programming 
+knowledge.
+
+--------------------------------------------------------------------------------
+PART 1: SYSTEM SETUP & FOLDERS
+--------------------------------------------------------------------------------
+Inside the TRICKLE_generator folder, you will see a few important items:
+
+1. [start_app.cmd]         : Double-click this to open the ATM Dispute App where 
+                             you enter dispute details.
+2. [generate_trickle.cmd]  : Double-click this to manually read the Excel file 
+                             and generate the CBS text files.
+3. [data] folder           : Contains the "atm_data.xlsx" Excel file. This is 
+                             where all your entered disputes are saved.
+4. [cbs_output] folder     : This is where the final Trickle Feed (.txt) files 
+                             and Reports will appear.
+
+--------------------------------------------------------------------------------
+PART 2: ENTERING A NEW ATM DISPUTE
+--------------------------------------------------------------------------------
+Step 1: Open the Application
+- Open the TRICKLE_generator folder.
+- Double-click the file named "start_app.cmd".
+- A window titled "ATM Dispute Processor" will appear on your screen.
+
+Step 2: Enter Dispute Details
+- Fill in the required fields for the new dispute (Reference Number, Card 
+  Number, ATM ID, Amount, Transaction Date, Dispute Type, etc.).
+- Ensure that the ATM ID and Card Numbers are typed accurately.
+
+Step 3: Save the Dispute
+- Click the "Process Dispute" or "Save" button in the application.
+- The system will calculate the correct debits, credits, and file formats
+  (like T1, T2, VC, etc.), and securely save everything into the Excel database.
+
+*Note*: If you need to make bulk edits, you can carefully open the 
+"data/atm_data.xlsx" file in Microsoft Excel to view or change records, but 
+make sure Excel is CLOSED before running the generators!
+
+--------------------------------------------------------------------------------
+PART 4: GENERATING THE CBS FILES (TRICKLE FEEDS)
+--------------------------------------------------------------------------------
+Once you have entered all your disputes for the day, you must generate the text 
+files that will be uploaded to the banking system.
+
+Step 1: Run the Generator
+- Go back to the main TRICKLE_generator folder.
+- Double-click the file named "generate_trickle.cmd".
+
+Step 2: Watch the Black Screen
+- A black window will pop up showing the progress.
+- It will read the Excel file, clean up any old files from yesterday, and 
+  create the new reports.
+- Wait until you see the message: "[SUCCESS] Files generated in: cbs_output".
+- Press any key on your keyboard to close the black window.
+
+--------------------------------------------------------------------------------
+PART 5: COLLECTING THE OUTPUT 
+--------------------------------------------------------------------------------
+Step 1: Open the Output Folder
+- Open the "cbs_output" folder.
+
+Step 2: Locate the Files
+- You will see files containing today's date, such as:
+  -> tffo1_disp_DDMMYY.txt  (Debits & related records)
+  -> tffo2_disp_DDMMYY.txt  (Vostro/collection adjustments)
+  -> vc_disp_DDMMYY.txt     (Special Foreign/Network disputes)
+  -> REPORT_DDMMYY.txt      (A human-readable summary of the file counts/amounts)
+
+Step 3: Handover / Upload
+- Copy these specific .txt files (tffo1, tffo2, vc, etc.) and securely transfer 
+  them or upload them to the CBS as per your standard banking procedure.
+
+--------------------------------------------------------------------------------
+TROUBLESHOOTING & COMMON ERRORS
+--------------------------------------------------------------------------------
+1. Excel File is Locked:
+   If the black screen flashes red text saying "Permission Denied" or fails to 
+   read "atm_data.xlsx", it means someone has the Excel file open. 
+   FIX: Close Microsoft Excel completely, then double-click 
+   "generate_trickle.cmd" again.
+
+2. Invalid Account / ATM ID:
+   If the generator warns you about missing ATM IDs or invalid references, 
+   open the ATM Dispute App (or the Excel file) and double-check the record 
+   you just entered for any missing digits.
+
+3. Black Screen Closes Instantly:
+   If the Generator window opens and immediately closes without saying SUCCESS, 
+   please contact the IT administrator, as Python or the system paths may have 
+   been moved.
+================================================================================

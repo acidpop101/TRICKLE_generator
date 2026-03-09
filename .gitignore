@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+New folder/
+cbs_output/
+*.dat

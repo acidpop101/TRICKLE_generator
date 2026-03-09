@@ -28,6 +28,36 @@ def excel_to_cbs_files(excel_path, output_dir):
                     if r[1]: known_bgls.add(str(r[1]).strip())
                     if len(r) > 2 and r[2]: known_bgls.add(str(r[2]).strip())
                     
+        # Build bin_table mappings
+        bin_table_bins = {}
+        bin_table_fiids = {}
+        if "bin_table" in wb.sheetnames:
+            for r in wb["bin_table"].iter_rows(min_row=2, values_only=True):
+                if r and r[0]:
+                    bank = str(r[2]).strip() if len(r) > 2 and r[2] else ""
+                    fiid = str(r[1]).strip() if len(r) > 1 and r[1] else ""
+                    bin_table_bins[str(r[0])] = bank
+                    if fiid:
+                        bin_table_fiids[fiid] = bank
+                    
+        def get_bank_name(cardno, atmid):
+            c_str = str(cardno).strip()
+            fbin, sbin = c_str[:9], c_str[:6]
+            bank_name = "FOREIGN"
+            
+            if fbin in bin_table_bins: bank_name = bin_table_bins[fbin]
+            elif sbin in bin_table_bins: bank_name = bin_table_bins[sbin]
+            
+            # If card is SBI but terminal is foreign (SOF dispute), resolve via Terminal ATM ID FIID
+            if bank_name.upper() == "SBI" and atmid and len(str(atmid)) >= 5:
+                t_char = str(atmid)[4].upper()
+                if t_char == 'F':
+                    t_fiid = str(atmid)[4:8]
+                    if t_fiid in bin_table_fiids:
+                        bank_name = bin_table_fiids[t_fiid]
+            
+            return bank_name
+                    
         def is_bgl(ac):
             ac_s = str(ac).strip()
             if ac_s in known_bgls: return True
@@ -96,8 +126,8 @@ def excel_to_cbs_files(excel_path, output_dir):
             todays_date = datetime.now().strftime("%d%m%y")
             fname = f"{prefix}_{todays_date}.txt"
 
-            # --- GENERATE VC/VD RECORD ---
-            if type_upper in ("VC", "VD"):
+            # --- GENERATE VD RECORD ---
+            if type_upper == "VD":
                 vc_target_date = posting_date if posting_date else raw_date
                 if isinstance(vc_target_date, datetime):
                     date_str_vc = vc_target_date.strftime("%d%m%Y")
@@ -140,17 +170,20 @@ def excel_to_cbs_files(excel_path, output_dir):
                 )
                 
                 ref_str = str(row[0] if row[0] is not None else "").strip()
-                term_bank = str(row[19] if len(row)>19 and row[19] else "SBI(MAURITIUS)LTD ATM COLLECTION ACCOUNTMU").strip()
-                if not term_bank or term_bank.lower() in ('none', 'nan'):
-                    term_bank = "SBI(MAURITIUS)LTD ATM COLLECTION ACCOUNTMU"
+                
+                # Dynamically resolve term_bank from card/terminal
+                foreign_bank_raw = get_bank_name(card, atm_id).upper()
+                term_bank = f"SBI({foreign_bank_raw})LTD ATM COLLECTION ACCOUNTMU"
+                
+                # Truncate strictly to 69 chars
+                term_bank = term_bank[:69]
                     
                 line2 = f"{ref_str:<11}{term_bank:<69}N"
-                combined_record = line1 + "\n" + line2
+                combined_record = line1 + line2
                 
-                prefix_vc = "vc_disp" if type_upper == "VC" else "vd_disp"
-                fname_vc = f"{prefix_vc}_{todays_date}.txt"
-                if fname_vc not in files_content: files_content[fname_vc] = []
-                files_content[fname_vc].append(combined_record)
+                fname_vd = f"vd_disp_{todays_date}.txt"
+                if fname_vd not in files_content: files_content[fname_vd] = []
+                files_content[fname_vd].append(combined_record)
                 continue
 
             # --- GENERATE DEBIT LEG ---
@@ -212,12 +245,12 @@ def process_file(args):
         # We assume if it's a file, it's the Excel input based on usage
         print(f"Processing Input File: {inputDirectoryPath}")
         excel_to_cbs_files(inputDirectoryPath, outputDirectoryPath)
-        # Verify the generated text files
+        # Verify the generated text files (only tffo files follow the 101-byte TFF format)
         if os.path.exists(outputDirectoryPath):
             file_list = [
                 os.path.join(outputDirectoryPath, f)
                 for f in os.listdir(outputDirectoryPath)
-                if os.path.isfile(os.path.join(outputDirectoryPath, f)) and f.lower().endswith('.txt') and "REPORT" not in f
+                if os.path.isfile(os.path.join(outputDirectoryPath, f)) and f.lower().endswith('.txt') and "REPORT" not in f and f.lower().startswith('tffo')
             ]
     else:
         # Standard directory processing
@@ -236,7 +269,7 @@ def process_file(args):
         file_list = [
             os.path.join(inputDirectoryPath, f)
             for f in os.listdir(inputDirectoryPath)
-            if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.txt')
+            if os.path.isfile(os.path.join(inputDirectoryPath, f)) and f.lower().endswith('.txt') and f.lower().startswith('tffo')
         ]
 
     # ---------- START of loop over files ----------
